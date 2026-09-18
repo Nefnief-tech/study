@@ -206,6 +206,42 @@ bool _isOfflineError(Object e) {
       s.contains('Connection closed');
 }
 
+/// store keys where an empty local list must never overwrite non-empty cloud
+/// data — protects against wiping the cloud from a device that never loaded
+/// it (fresh install, offline reconcile, cleared storage). studyroom/chats
+/// are exempt: clearing the chat or the selection is a legitimate empty sync.
+const _guardedKeys = {'subjects', 'todos', 'homework', 'grades', 'events', 'timetable'};
+
+/// true when [payload] holds an empty list while the cloud document still has
+/// items — pushing it would destroy cloud data
+Future<bool> _wouldWipeRemote(AuthUser user, String key, Map<String, dynamic> payload) async {
+  final localData = payload['data'];
+  if (localData is! String) return false;
+  Object? local;
+  try {
+    local = jsonDecode(localData);
+  } catch (_) {
+    return false;
+  }
+  if (local is! Map || local.values.any((v) => v is! List || v.isNotEmpty)) return false;
+
+  try {
+    final docId = await snapshotDocId(user.id, _collectionFor(key), key);
+    final doc = await databases.getDocument(
+      databaseId: kDatabaseId,
+      collectionId: _collectionFor(key),
+      documentId: docId,
+    );
+    final remoteRaw = doc.data['data'];
+    if (remoteRaw is! String) return false;
+    final remote = jsonDecode(remoteRaw);
+    if (remote is! Map) return false;
+    return remote.values.any((v) => v is List && v.isNotEmpty);
+  } catch (_) {
+    return false; // remote unreadable → don't block the push
+  }
+}
+
 Future<void> _pushSnapshot(AuthUser user, String key) async {
   final ops = _keys[key]!;
   final auth = Stores.I.auth;
@@ -218,6 +254,16 @@ Future<void> _pushSnapshot(AuthUser user, String key) async {
       'updatedAt': DateTime.now().millisecondsSinceEpoch,
     };
     if (!ops.omitKey) payload['key'] = key;
+
+    if (_guardedKeys.contains(key) && await _wouldWipeRemote(user, key, payload)) {
+      // keep the cloud copy; clear the dirty flag so we don't retry forever —
+      // the next reconcile will pull the cloud state back onto this device
+      Stores.I.syncMeta.clearDirty(key);
+      _scheduledAt.remove(key);
+      auth.setSyncing(false);
+      return;
+    }
+
     await _upsertDocument(_collectionFor(key), docId, payload, user.id);
     Stores.I.syncMeta.clearDirty(key);
     auth.setSynced(DateTime.now().millisecondsSinceEpoch);

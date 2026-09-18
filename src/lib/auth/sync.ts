@@ -168,6 +168,34 @@ async function upsertDocument(collection: string, docId: string, payload: Record
   }
 }
 
+/**
+ * Store keys where an empty local list must never overwrite non-empty cloud
+ * data — protects against wiping the cloud from a device that never loaded it
+ * (fresh install, offline reconcile, cleared storage). studyroom/chats are
+ * exempt: clearing the chat or the selection is a legitimate empty sync.
+ */
+const GUARDED_KEYS = new Set(["subjects", "todos", "homework", "grades", "events", "timetable"]);
+
+/** true when the local payload holds only empty lists while the cloud
+ *  document still has items — pushing it would destroy cloud data */
+async function wouldWipeRemote(userId: string, key: string, payload: Record<string, unknown>) {
+  try {
+    const local = JSON.parse((payload.data as string) ?? "{}");
+    if (typeof local !== "object" || !Object.values(local).every((v) => Array.isArray(v) && v.length === 0))
+      return false;
+    const docId = await snapshotDocId(userId, collectionFor(key), key);
+    const remote = (await databases!.getDocument(
+      DATABASE_ID,
+      collectionFor(key),
+      docId,
+    )) as unknown as Record<string, unknown>;
+    const remoteData = JSON.parse((remote.data as string) ?? "{}");
+    return Object.values(remoteData).some((v) => Array.isArray(v) && v.length > 0);
+  } catch {
+    return false; // remote unreadable (or absent) → don't block the push
+  }
+}
+
 async function pushSnapshot(userId: string, key: string) {
   const ops = KEYS[key];
   const { setSyncing, setSynced, setSyncError } = useAuthStore.getState();
@@ -176,6 +204,15 @@ async function pushSnapshot(userId: string, key: string) {
     const docId = await snapshotDocId(userId, collectionFor(key), key);
     const payload: Record<string, unknown> = { userId, ...ops.read(), updatedAt: Date.now() };
     if (!ops.omitKey) payload.key = key;
+
+    if (GUARDED_KEYS.has(key) && (await wouldWipeRemote(userId, key, payload))) {
+      // keep the cloud copy; clear the dirty flag so we don't retry forever —
+      // the next reconcile will pull the cloud state back onto this device
+      useSyncMetaStore.getState().clearDirty(key);
+      setSyncing(false);
+      return;
+    }
+
     await upsertDocument(collectionFor(key), docId, payload, userId);
     useSyncMetaStore.getState().clearDirty(key);
     setSynced(Date.now());
