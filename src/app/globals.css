@@ -1,26 +1,96 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* runtime palette — swapped by the `.dark` class on <html> (see ThemeToggle) */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --paper: #f5f2ea;
+  --paper-deep: #edeade;
+  --card: #fdfcf8;
+  --ink: #26221b;
+  --ink-soft: #756e60;
+  --line: #e0dacb;
+  --grid: #e8e3d5;
+  --accent: #31633f;
+  --accent-soft: #e2eadd;
+  --marker: #c14b26;
+  --info: #38618c;
+  --amber: #8a6a10;
+  color-scheme: light;
+}
+
+.dark {
+  --paper: #17150f;
+  --paper-deep: #1e1b14;
+  --card: #211e17;
+  --ink: #ece6d6;
+  --ink-soft: #a29a88;
+  --line: #353025;
+  --grid: #251f15;
+  --accent: #8fb99a;
+  --accent-soft: #253528;
+  --marker: #e08a63;
+  --info: #8fb4dd;
+  --amber: #d9b95c;
+  color-scheme: dark;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --color-paper: var(--paper);
+  --color-paper-deep: var(--paper-deep);
+  --color-card: var(--card);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-line: var(--line);
+  --color-grid: var(--grid);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-marker: var(--marker);
+  --color-info: var(--info);
+  --color-amber: var(--amber);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-display: var(--font-fraunces);
+  --font-sans: var(--font-instrument);
+  --font-mono: var(--font-plex);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-instrument);
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--paper);
+}
+
+@layer components {
+  .field {
+    @apply w-full rounded-lg border border-line bg-card px-3 py-2 text-sm text-ink shadow-[inset_0_1px_0_rgb(0_0_0/0.02)] transition placeholder:text-ink-soft/60 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30;
+  }
+
+  .btn-primary {
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-ink px-4 py-2 text-sm font-medium text-paper transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .btn-ghost {
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-line bg-card px-3 py-2 text-sm text-ink transition-colors hover:border-ink/30 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .btn-icon {
+    @apply grid size-8 cursor-pointer place-items-center rounded-lg text-ink-soft transition-colors hover:bg-ink/5 hover:text-ink;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-line bg-paper px-2 py-0.5 text-[11px] leading-4;
+  }
+
+  .card {
+    @apply rounded-2xl border border-line bg-card;
+  }
+
+  .label {
+    @apply mb-1 block font-mono text-[11px] tracking-[0.08em] text-ink-soft uppercase;
+  }
 }

@@ -1,0 +1,189 @@
+{
+  "projectId": "6aac46e3001a9ef65b25",
+  "projectName": "study",
+  "platforms": [
+    {
+      "key": "localhost",
+      "name": "Local dev",
+      "type": "web",
+      "hostname": "localhost"
+    }
+  ],
+  "databases": [
+    {
+      "key": "semester",
+      "name": "Semester",
+      "collections": [
+        {
+          "key": "snapshots",
+          "name": "Snapshots",
+          "documentSecurity": true,
+          "permissions": [
+            "create(users)"
+          ],
+          "attributes": [
+            {
+              "key": "userId",
+              "type": "string",
+              "size": 64,
+              "required": true
+            },
+            {
+              "key": "key",
+              "type": "string",
+              "size": 32,
+              "required": true
+            },
+            {
+              "key": "data",
+              "type": "string",
+              "size": 1000000,
+              "required": true
+            },
+            {
+              "key": "updatedAt",
+              "type": "integer",
+              "required": true
+            }
+          ],
+          "indexes": [
+            {
+              "key": "user_key",
+              "type": "key",
+              "attributes": [
+                "userId",
+                "key"
+              ]
+            }
+          ]
+        },
+        {
+          "key": "chats",
+          "name": "Chats",
+          "documentSecurity": true,
+          "permissions": [
+            "create(users)"
+          ],
+          "attributes": [
+            {
+              "key": "userId",
+              "type": "string",
+              "size": 64,
+              "required": true
+            },
+            {
+              "key": "messages",
+              "type": "string",
+              "size": 1000000,
+              "required": true
+            },
+            {
+              "key": "updatedAt",
+              "type": "integer",
+              "required": true
+            }
+          ],
+          "indexes": [
+            {
+              "key": "user_idx",
+              "type": "key",
+              "attributes": [
+                "userId"
+              ]
+            }
+          ]
+        },
+        {
+          "key": "decks",
+          "name": "Decks",
+          "documentSecurity": true,
+          "permissions": [
+            "create(users)"
+          ],
+          "attributes": [
+            {
+              "key": "userId",
+              "type": "string",
+              "size": 64,
+              "required": true
+            },
+            {
+              "key": "deckId",
+              "type": "string",
+              "size": 64,
+              "required": true
+            },
+            {
+              "key": "title",
+              "type": "string",
+              "size": 256,
+              "required": true
+            },
+            {
+              "key": "documentIds",
+              "type": "string",
+              "size": 100000,
+              "required": true
+            },
+            {
+              "key": "cards",
+              "type": "string",
+              "size": 1000000,
+              "required": true
+            },
+            {
+              "key": "createdAt",
+              "type": "integer",
+              "required": true
+            },
+            {
+              "key": "updatedAt",
+              "type": "integer",
+              "required": true
+            }
+          ],
+          "indexes": [
+            {
+              "key": "user_idx",
+              "type": "key",
+              "attributes": [
+                "userId"
+              ]
+            },
+            {
+              "key": "deckId",
+              "type": "key",
+              "attributes": [
+                "deckId"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "buckets": [
+    {
+      "key": "study-files",
+      "name": "Study files",
+      "enabled": true,
+      "maximumFileSize": 30000000,
+      "allowedFileExtensions": [
+        "pdf",
+        "docx",
+        "pptx",
+        "txt",
+        "md"
+      ],
+      "encryption": true,
+      "antivirus": true,
+      "security": true,
+      "permissions": [
+        "read(users)",
+        "create(users)",
+        "update(users)",
+        "delete(users)"
+      ]
+    }
+  ]
+}

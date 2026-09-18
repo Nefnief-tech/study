@@ -1,0 +1,11 @@
+node_modules
+.next
+.git
+.data
+*.log
+.env.local
+README.md
+appwrite.json
+scripts
+deploy
+.DS_Store

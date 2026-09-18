@@ -1,0 +1,25 @@
+# Semester — production deployment
+#   docker compose up -d --build     → http://<host>:8899
+#   docker compose logs -f           → follow logs
+#
+# Requirements:
+#   • .env.local next to this file with at least DEEPSEEK_API_KEY (AI features)
+#   • the Appwrite schema: appwrite push databases  (see appwrite.json)
+#
+# The `chats`/`decks`/`snapshots` data lives in your Appwrite project;
+# uploaded-document text persists in the mounted ./.data volume.
+
+services:
+  semester:
+    build: .
+    container_name: semester
+    ports:
+      - "8899:8899"
+    environment:
+      - PORT=8899
+      - HOSTNAME=0.0.0.0
+    env_file:
+      - .env.local
+    volumes:
+      - ./.data:/app/.data
+    restart: unless-stopped
