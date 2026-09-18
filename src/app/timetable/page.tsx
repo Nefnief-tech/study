@@ -1,10 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Eraser, Table2, Upload } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Eraser, RefreshCcw, Table2, Upload } from "lucide-react";
+import type { PortalSub } from "@/lib/server/portal";
 import type { TimetableEntry } from "@/lib/types";
 import { useTimetableStore } from "@/lib/store/timetable";
+import { usePortalStore } from "@/lib/store/portal";
 import { useSubjectsStore } from "@/lib/store/subjects";
+import { useAuthStore } from "@/lib/store/auth";
 import { useHydrated } from "@/lib/hooks";
 import {
   DAY_ORDER,
@@ -13,8 +16,19 @@ import {
   timetableToJson,
 } from "@/lib/timetable";
 import { cn, PALETTE } from "@/lib/utils";
+import { getAuthHeaders } from "@/lib/auth/appwrite";
 import PageSkeleton from "@/components/ui/PageSkeleton";
 import { EmptyState, SubjectDot } from "@/components/ui/bits";
+
+const PORTAL_WEEKDAY: Record<string, string> = {
+  Mo: "Mon",
+  Di: "Tue",
+  Mi: "Wed",
+  Do: "Thu",
+  Fr: "Fri",
+  Sa: "Sat",
+  So: "Sun",
+};
 
 function subjectColor(name: string, names: Map<string, string>) {
   return names.get(name.toLowerCase()) ?? PALETTE[name.length % PALETTE.length];
@@ -27,10 +41,14 @@ export default function TimetablePage() {
   const clear = useTimetableStore((s) => s.clear);
   const subjects = useSubjectsStore((s) => s.subjects);
 
+  const portal = usePortalStore();
   const [panelOpen, setPanelOpen] = useState(false);
   const [raw, setRaw] = useState("");
   const [error, setError] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [fetching, setFetching] = useState(false);
+
+  const signedIn = useAuthStore((s) => s.status) === "signed-in";
 
   const subjectColors = useMemo(() => {
     const map = new Map<string, string>();
@@ -48,9 +66,6 @@ export default function TimetablePage() {
     return [...set].sort((a, b) => a - b);
   }, [entries]);
 
-  const cell = (day: string, period: number) =>
-    entries.filter((e) => e.day === day && e.period === period);
-
   const periodTime = useMemo(() => {
     const map = new Map<number, string>();
     for (const e of entries) if (e.time && !map.has(e.period)) map.set(e.period, e.time);
@@ -58,6 +73,19 @@ export default function TimetablePage() {
   }, [entries]);
 
   const todayCol = DAY_ORDER[new Date().getDay() === 0 ? 6 : new Date().getDay() - 1];
+
+  const relevantSubs: PortalSub[] = portal.data
+    ? portal.data.days.flatMap((d) => d.entries).filter((s) =>
+        portal.data!.courses.some((c) => c.trim() === s.course.trim()))
+    : [];
+
+  const cellSubsFor = (day: string, period: number, items: TimetableEntry[]) =>
+    relevantSubs.filter(
+      (s) =>
+        PORTAL_WEEKDAY[s.weekday] === day &&
+        parseInt(s.period, 10) === period &&
+        items.some((e) => e.subject.trim() === s.course.trim()),
+    );
 
   const load = (text: string) => {
     setError("");
@@ -71,6 +99,56 @@ export default function TimetablePage() {
       setError((e as Error).message);
     }
   };
+
+  const fetchNow = async () => {
+    if (fetching) return;
+    setFetching(true);
+    portal.setError(null);
+    try {
+      const res = await fetch("/api/portal/fetch", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(await getAuthHeaders()) },
+        body: JSON.stringify({
+          baseUrl: portal.baseUrl,
+          username: portal.username,
+          password: portal.password,
+        }),
+      });
+      const json = (await res.json().catch(() => null)) as
+        | PortalPlanJson
+        | { error?: string; detail?: string }
+        | null;
+      if (!res.ok || !json || !("days" in json)) {
+        const code = json && "error" in json ? json.error : "portal_unreachable";
+        portal.setError(
+          code === "portal_auth"
+            ? "Portal rejected the login — check portal URL, email and password."
+            : code === "auth_required"
+              ? "Sign in first (sidebar)."
+              : code === "missing_settings"
+                ? "Fill in portal URL, email and password below."
+                : (json && "detail" in json ? json.detail : "") ||
+                  "The portal could not be reached.",
+        );
+        return;
+      }
+      usePortalStore.getState().setData(json as PortalPlanJson);
+    } catch {
+      portal.setError("Could not reach the portal.");
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  // auto-fetch once per page visit when enabled and credentials are stored
+  useEffect(() => {
+    if (!hydrated) return;
+    const p = usePortalStore.getState();
+    if (p.autoFetch && p.baseUrl && p.username && p.password && p.data === null) {
+      void fetchNow();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated]);
 
   if (!hydrated) return <PageSkeleton />;
 
@@ -107,6 +185,89 @@ export default function TimetablePage() {
         )}
       </header>
 
+      {/* substitute plan portal */}
+      <details className="card mb-8 px-5 py-4" open={entries.length === 0 || !!portal.error}>
+        <summary className="cursor-pointer font-display text-base font-semibold tracking-tight">
+          Substitute plan (Vertretungsplan)
+          {portal.lastFetched && !portal.error && (
+            <span className="ml-2 font-mono text-[10px] text-ink-soft">
+              fetched {new Date(portal.lastFetched).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}
+            </span>
+          )}
+        </summary>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <div className="sm:col-span-2">
+            <label className="label" htmlFor="portal-url">
+              Portal URL
+            </label>
+            <input
+              id="portal-url"
+              className="field"
+              placeholder="https://evbg.eltern-portal.org"
+              value={portal.baseUrl}
+              onChange={(e) =>
+                usePortalStore.getState().setSettings({ ...portal, baseUrl: e.target.value })
+              }
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor="portal-email">
+              Portal email
+            </label>
+            <input
+              id="portal-email"
+              type="email"
+              className="field"
+              autoComplete="off"
+              value={portal.username}
+              onChange={(e) =>
+                usePortalStore.getState().setSettings({ ...portal, username: e.target.value })
+              }
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor="portal-password">
+              Portal password
+            </label>
+            <input
+              id="portal-password"
+              type="password"
+              className="field"
+              autoComplete="off"
+              value={portal.password}
+              onChange={(e) =>
+                usePortalStore.getState().setSettings({ ...portal, password: e.target.value })
+              }
+            />
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+          <label className="flex cursor-pointer items-center gap-2 text-xs text-ink-soft">
+            <input
+              type="checkbox"
+              checked={portal.autoFetch}
+              onChange={(e) =>
+                usePortalStore.getState().setSettings({ ...portal, autoFetch: e.target.checked })
+              }
+            />
+            fetch automatically on every visit
+          </label>
+          <button
+            className="btn-primary"
+            disabled={fetching || !portal.baseUrl || !portal.username || !portal.password}
+            onClick={() => void fetchNow()}
+          >
+            <RefreshCcw className={cn("size-4", fetching && "animate-spin")} />
+            {fetching ? "Fetching…" : "Fetch now"}
+          </button>
+        </div>
+        {portal.error && <p className="mt-3 text-sm text-marker">{portal.error}</p>}
+        <p className="mt-3 font-mono text-[10px] leading-relaxed text-ink-soft">
+          credentials are stored only on this device and sent only to your own server when
+          fetching.
+        </p>
+      </details>
+
       {/* import panel */}
       {(panelOpen || entries.length === 0) && (
         <div className="card mb-8 p-5">
@@ -136,8 +297,8 @@ export default function TimetablePage() {
               <Upload className="size-4" /> Format timetable
             </button>
             <p className="font-mono text-[10px] leading-relaxed text-ink-soft">
-              each entry: day · period · subject — optional: time · teacher · room.
-              days: mon–sun (EN or DE).
+              each entry: day · period · subject — optional: time · teacher · room. days:
+              mon–sun (EN or DE).
             </p>
           </div>
           {error && <p className="mt-3 text-sm text-marker">{error}</p>}
@@ -153,81 +314,121 @@ export default function TimetablePage() {
 
       {/* formatted grid */}
       {entries.length > 0 ? (
-        <div className="overflow-x-auto rounded-2xl border border-line bg-card">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr>
-                <th className="sticky left-0 z-10 w-20 border-b border-r border-line bg-card px-2 py-2.5 font-mono text-[10px] tracking-[0.14em] text-ink-soft uppercase">
-                  Pd
-                </th>
-                {days.map((d) => (
-                  <th
-                    key={d}
-                    className={cn(
-                      "border-b border-line px-3 py-2.5 font-display text-base font-semibold tracking-tight",
-                      d === todayCol && "bg-accent-soft text-accent",
-                    )}
-                  >
-                    {d}
-                    {d === todayCol && (
-                      <span className="ml-2 font-mono text-[9px] tracking-[0.14em] uppercase">
-                        today
-                      </span>
-                    )}
+        <>
+          {/* legend */}
+          {(relevantSubs.length > 0 || portal.error) && (
+            <div className="mb-3 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] text-ink-soft">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="inline-block size-2.5 rounded-full bg-marker" /> cancelled
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="inline-block size-2.5 rounded-full bg-amber" /> substituted
+              </span>
+              {relevantSubs.length > 0 && <span>· {relevantSubs.length} for your courses</span>}
+            </div>
+          )}
+          <div className="overflow-x-auto rounded-2xl border border-line bg-card">
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr>
+                  <th className="sticky left-0 z-10 w-20 border-b border-r border-line bg-card px-2 py-2.5 font-mono text-[10px] tracking-[0.14em] text-ink-soft uppercase">
+                    Pd
                   </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {periods.map((p) => (
-                <tr key={p} className="align-top">
-                  <td className="sticky left-0 z-10 border-b border-r border-line bg-card px-2 py-2 text-center">
-                    <div className="font-mono text-sm font-semibold">{p}</div>
-                    {periodTime.get(p) && (
-                      <div className="font-mono text-[9px] leading-tight text-ink-soft">
-                        {periodTime.get(p)!.split(" - ")[0]}
-                      </div>
-                    )}
-                  </td>
-                  {days.map((d) => {
-                    const items = cell(d, p);
-                    return (
-                      <td
-                        key={d}
-                        className={cn(
-                          "border-b border-line px-2 py-2 align-top",
-                          d === todayCol && "bg-accent/[0.06]",
-                        )}
-                      >
-                        {items.length === 0 ? (
-                          <span className="text-ink-soft/40">—</span>
-                        ) : (
-                          <div className="space-y-1.5">
-                            {items.map((e, i) => (
-                              <div key={i}>
-                                <div className="flex items-center gap-1.5">
-                                  <SubjectDot color={subjectColor(e.subject, subjectColors)} />
-                                  <span className="text-xs leading-tight font-semibold">
-                                    {e.subject}
-                                  </span>
-                                </div>
-                                <div className="mt-0.5 font-mono text-[9px] leading-tight text-ink-soft">
-                                  {e.time && <div>{e.time}</div>}
-                                  {e.teacher && <div>{e.teacher}</div>}
-                                  {e.room && <div>room {e.room}</div>}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </td>
-                    );
-                  })}
+                  {days.map((d) => (
+                    <th
+                      key={d}
+                      className={cn(
+                        "border-b border-line px-3 py-2.5 font-display text-base font-semibold tracking-tight",
+                        d === todayCol && "bg-accent-soft text-accent",
+                      )}
+                    >
+                      {d}
+                      {d === todayCol && (
+                        <span className="ml-2 font-mono text-[9px] tracking-[0.14em] uppercase">
+                          today
+                        </span>
+                      )}
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {periods.map((p) => (
+                  <tr key={p} className="align-top">
+                    <td className="sticky left-0 z-10 border-b border-r border-line bg-card px-2 py-2 text-center">
+                      <div className="font-mono text-sm font-semibold">{p}</div>
+                      {periodTime.get(p) && (
+                        <div className="font-mono text-[9px] leading-tight text-ink-soft">
+                          {periodTime.get(p)!.split(" - ")[0]}
+                        </div>
+                      )}
+                    </td>
+                    {days.map((d) => {
+                      const items = entries.filter((e) => e.day === d && e.period === p);
+                      const cellSubs = cellSubsFor(d, p, items);
+                      const cancelled = cellSubs.some((s) => s.cancelled);
+                      const substituted = cellSubs.some((s) => !s.cancelled);
+                      return (
+                        <td
+                          key={d}
+                          className={cn(
+                            "border-b border-line px-2 py-2 align-top transition-colors",
+                            d === todayCol && "bg-accent/[0.06]",
+                            cancelled && items.length > 0 && "bg-marker/[0.08]",
+                            substituted && !cancelled && items.length > 0 && "bg-amber/[0.07]",
+                          )}
+                        >
+                          {items.length === 0 && cellSubs.length === 0 ? (
+                            <span className="text-ink-soft/40">—</span>
+                          ) : (
+                            <div className="space-y-1.5">
+                              {items.map((e, i) => (
+                                <div key={i}>
+                                  <div className="flex items-center gap-1.5">
+                                    <SubjectDot color={subjectColor(e.subject, subjectColors)} />
+                                    <span
+                                      className={cn(
+                                        "text-xs leading-tight font-semibold",
+                                        cancelled && "line-through decoration-marker",
+                                      )}
+                                    >
+                                      {e.subject}
+                                    </span>
+                                  </div>
+                                  <div className="mt-0.5 font-mono text-[9px] leading-tight text-ink-soft">
+                                    {e.time && <div>{e.time}</div>}
+                                    {e.teacher && <div>{e.teacher}</div>}
+                                    {e.room && <div>room {e.room}</div>}
+                                  </div>
+                                </div>
+                              ))}
+                              {cellSubs.map((s, i) => (
+                                <span
+                                  key={`s${i}`}
+                                  className={cn(
+                                    "chip max-w-full",
+                                    s.cancelled
+                                      ? "border-marker/40 bg-marker/10 text-marker"
+                                      : "border-amber/40 bg-amber/10 text-amber",
+                                  )}
+                                  title={`${s.date} · ${s.info || (s.cancelled ? "cancelled" : "substitution")}`}
+                                >
+                                  {s.cancelled
+                                    ? "cancelled"
+                                    : `→ ${s.substitute || "?"}${s.room ? ` · ${s.room}` : ""}`}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       ) : (
         !panelOpen && (
           <EmptyState
@@ -244,4 +445,15 @@ export default function TimetablePage() {
       )}
     </div>
   );
+}
+
+interface PortalPlanJson {
+  days: PortalPlanJsonDay[];
+  courses: string[];
+  stand: string | null;
+}
+interface PortalPlanJsonDay {
+  date: string;
+  weekday: string;
+  entries: PortalSub[];
 }
