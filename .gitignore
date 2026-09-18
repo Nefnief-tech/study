@@ -45,3 +45,6 @@ next-env.d.ts
 
 # deployment archives
 *.zip
+
+# emulator screenshots from the android-dev MCP tool
+test-artifacts/

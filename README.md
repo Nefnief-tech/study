@@ -94,6 +94,15 @@ palette); deleting one cascades: its grades are removed and tasks/events are det
   `@theme inline` — add a color by adding the var + mapping, never a hardcoded hex.
 - ID generation: `crypto.randomUUID()`.
 
+## Daily digest (Appwrite Function)
+
+`functions/daily-digest/` runs on a daily cron (`30 15 * * *` UTC) and sends push notifications
+via Appwrite Messaging: tomorrow's classes **with cancellations/substitutions** from the
+mirrored Vertretungsplan, overdue/due-soon homework & tasks, and the next 7 days of exams and
+deadlines. Deploy with `appwrite push functions` — details in
+[functions/daily-digest/README.md](functions/daily-digest/README.md). Both apps mirror the
+fetched substitute plan (never the credentials) into a `portal` snapshot after each fetch.
+
 ## Next up (suggested)
 
 - Swap `localStorage` for Prisma + SQLite/Postgres behind API routes when accounts are needed

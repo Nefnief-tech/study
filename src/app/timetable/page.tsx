@@ -17,6 +17,7 @@ import {
 } from "@/lib/timetable";
 import { cn, PALETTE } from "@/lib/utils";
 import { getAuthHeaders } from "@/lib/auth/appwrite";
+import { mirrorPortal } from "@/lib/auth/sync";
 import PageSkeleton from "@/components/ui/PageSkeleton";
 import { EmptyState, SubjectDot } from "@/components/ui/bits";
 
@@ -139,6 +140,8 @@ export default function TimetablePage() {
         return;
       }
       usePortalStore.getState().setData(json as PortalPlanJson);
+      // best-effort: plan (no credentials) into the cloud for the daily digest
+      void mirrorPortal(json as PortalPlanJson);
     } catch {
       portal.setError("Could not reach the portal.");
     } finally {

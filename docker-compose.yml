@@ -4,7 +4,7 @@
 #
 # Requirements:
 #   • .env.local next to this file with at least DEEPSEEK_API_KEY (AI features)
-#   • the Appwrite schema: appwrite push databases  (see appwrite.json)
+#   • the Appwrite schema: appwrite push databases  (see appwrite.config.json)
 #
 # The `chats`/`decks`/`snapshots` data lives in your Appwrite project;
 # uploaded-document text persists in the mounted ./.data volume.

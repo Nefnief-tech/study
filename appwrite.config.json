@@ -7,6 +7,12 @@
       "name": "Local dev",
       "type": "web",
       "hostname": "localhost"
+    },
+    {
+      "key": "android-app",
+      "name": "Semester Android app",
+      "type": "android",
+      "package": "com.semesterapp.semester"
     }
   ],
   "databases": [
@@ -184,6 +190,26 @@
         "update(users)",
         "delete(users)"
       ]
+    }
+  ],
+  "functions": [
+    {
+      "name": "Daily digest",
+      "runtime": "node-22",
+      "execute": [],
+      "events": [],
+      "scopes": [
+        "documents.read",
+        "messages.write"
+      ],
+      "schedule": "30 15 * * *",
+      "timeout": 60,
+      "enabled": true,
+      "logging": true,
+      "entrypoint": "src/main.js",
+      "commands": "npm install --no-audit --no-fund",
+      "path": "functions/daily-digest",
+      "$id": "daily-digest"
     }
   ]
 }

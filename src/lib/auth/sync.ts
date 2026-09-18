@@ -22,6 +22,14 @@ import { useHomeworkStore } from "@/lib/store/homework";
 import { useTimetableStore } from "@/lib/store/timetable";
 import { useStudyRoomStore } from "@/lib/store/studyroom";
 import type { Deck, StudyDoc } from "../types";
+import type { PortalSub } from "../server/portal";
+
+/** shape returned by /api/portal/fetch (see timetable page) */
+export interface PortalPlanJson {
+  days: Array<{ date: string; weekday: string; entries: PortalSub[] }>;
+  courses: string[];
+  stand: string | null;
+}
 
 /**
  * Sync model: **the cloud is the source of truth on page load.**
@@ -417,6 +425,32 @@ export async function signUp(name: string, email: string, password: string) {
 export async function signOut() {
   if (account) await account.deleteSession("current").catch(() => {});
   useAuthStore.getState().setAuth(null, "signed-out");
+}
+
+/**
+ * Mirrors the fetched substitute plan (plan ONLY — portal credentials never
+ * leave this device) into a `portal` snapshot document, so the daily-digest
+ * Appwrite function can respect cancellations and substitutions.
+ */
+export async function mirrorPortal(plan: PortalPlanJson) {
+  const { user, status } = useAuthStore.getState();
+  if (status !== "signed-in" || !user || !databases) return;
+  try {
+    const docId = await snapshotDocId(user.id, SNAPSHOTS_COLLECTION_ID, "portal");
+    await upsertDocument(
+      SNAPSHOTS_COLLECTION_ID,
+      docId,
+      {
+        userId: user.id,
+        key: "portal",
+        data: JSON.stringify({ days: plan.days, courses: plan.courses }),
+        updatedAt: Date.now(),
+      },
+      user.id,
+    );
+  } catch {
+    // mirroring is best-effort — the digest just falls back to plain classes
+  }
 }
 
 /** manual push of everything (used by the "Sync now" button) */
