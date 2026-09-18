@@ -1,0 +1,33 @@
+# Semester — systemd service (24/7, no Docker)
+#
+# Install:
+#   1. Copy this folder to /opt/semester (or adjust WorkingDirectory below)
+#   2. Install bun:  curl -fsSL https://bun.sh/install | bash
+#   3. Adjust User= and the bun path in ExecStart to match your server
+#   4. sudo cp deploy/semester.service /etc/systemd/system/
+#      sudo systemctl daemon-reload
+#      sudo systemctl enable --now semester
+#
+# Logs:     journalctl -u semester -f
+# Port:     http://<server>:8899
+
+[Unit]
+Description=Semester — study app (Next.js via Bun)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# ── adjust these two lines for your server ──
+User=fabi
+WorkingDirectory=/opt/semester
+# ────────────────────────────────────────────
+Environment=NODE_ENV=production
+Environment=PORT=8899
+Environment=HOSTNAME=0.0.0.0
+ExecStart=/home/fabi/.bun/bin/bun run start:prod
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

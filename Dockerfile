@@ -6,7 +6,7 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
-RUN corepack enable && pnpm install --frozen-lockfile
+RUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts
 
 # 2. build (public Appwrite vars are inlined at build time) -----------------
 FROM node:22-alpine AS builder
