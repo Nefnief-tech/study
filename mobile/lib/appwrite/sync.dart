@@ -214,8 +214,8 @@ const _guardedKeys = {'subjects', 'todos', 'homework', 'grades', 'events', 'time
 
 /// true when [payload] holds an empty list while the cloud document still has
 /// items — pushing it would destroy cloud data
-Future<bool> _wouldWipeRemote(AuthUser user, String key, Map<String, dynamic> payload) async {
-  final localData = payload['data'];
+Future<bool> _wouldWipeRemote(AuthUser user, String key, Map<String, dynamic> attributes) async {
+  final localData = attributes['data'];
   if (localData is! String) return false;
   Object? local;
   try {
@@ -248,14 +248,17 @@ Future<void> _pushSnapshot(AuthUser user, String key) async {
   auth.setSyncing(true);
   try {
     final docId = await snapshotDocId(user.id, _collectionFor(key), key);
-    final payload = <String, dynamic>{
+    // new Appwrite API: `data` is the attributes object (was: a JSON string
+    // per attribute — the old flat shape now fails with "Unknown attribute")
+    final attributes = <String, dynamic>{
       'userId': user.id,
       ...ops.read(),
       'updatedAt': DateTime.now().millisecondsSinceEpoch,
     };
-    if (!ops.omitKey) payload['key'] = key;
+    if (!ops.omitKey) attributes['key'] = key;
+    final payload = {'data': attributes};
 
-    if (_guardedKeys.contains(key) && await _wouldWipeRemote(user, key, payload)) {
+    if (_guardedKeys.contains(key) && await _wouldWipeRemote(user, key, attributes)) {
       // keep the cloud copy; clear the dirty flag so we don't retry forever —
       // the next reconcile will pull the cloud state back onto this device
       Stores.I.syncMeta.clearDirty(key);
@@ -325,13 +328,15 @@ Future<void> _pushDeck(AuthUser user, Deck deck) async {
     kDecksCollectionId,
     docId,
     {
-      'userId': user.id,
-      'deckId': deck.id,
-      'title': deck.title,
-      'documentIds': jsonEncode(deck.documentIds),
-      'cards': jsonEncode(deck.cards.map((c) => c.toJson()).toList()),
-      'createdAt': deck.createdAt,
-      'updatedAt': DateTime.now().millisecondsSinceEpoch,
+      'data': {
+        'userId': user.id,
+        'deckId': deck.id,
+        'title': deck.title,
+        'documentIds': jsonEncode(deck.documentIds),
+        'cards': jsonEncode(deck.cards.map((c) => c.toJson()).toList()),
+        'createdAt': deck.createdAt,
+        'updatedAt': DateTime.now().millisecondsSinceEpoch,
+      },
     },
     user.id,
   );

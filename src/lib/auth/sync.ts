@@ -178,9 +178,9 @@ const GUARDED_KEYS = new Set(["subjects", "todos", "homework", "grades", "events
 
 /** true when the local payload holds only empty lists while the cloud
  *  document still has items — pushing it would destroy cloud data */
-async function wouldWipeRemote(userId: string, key: string, payload: Record<string, unknown>) {
+async function wouldWipeRemote(userId: string, key: string, attributes: Record<string, unknown>) {
   try {
-    const local = JSON.parse((payload.data as string) ?? "{}");
+    const local = JSON.parse((attributes.data as string) ?? "{}");
     if (typeof local !== "object" || !Object.values(local).every((v) => Array.isArray(v) && v.length === 0))
       return false;
     const docId = await snapshotDocId(userId, collectionFor(key), key);
@@ -202,10 +202,13 @@ async function pushSnapshot(userId: string, key: string) {
   setSyncing(true);
   try {
     const docId = await snapshotDocId(userId, collectionFor(key), key);
-    const payload: Record<string, unknown> = { userId, ...ops.read(), updatedAt: Date.now() };
-    if (!ops.omitKey) payload.key = key;
+    // new Appwrite API: `data` is the attributes object (was: a JSON string
+    // per attribute — the old flat shape now fails with "Unknown attribute")
+    const attributes: Record<string, unknown> = { userId, ...ops.read(), updatedAt: Date.now() };
+    if (!ops.omitKey) attributes.key = key;
+    const payload = { data: attributes };
 
-    if (GUARDED_KEYS.has(key) && (await wouldWipeRemote(userId, key, payload))) {
+    if (GUARDED_KEYS.has(key) && (await wouldWipeRemote(userId, key, attributes))) {
       // keep the cloud copy; clear the dirty flag so we don't retry forever —
       // the next reconcile will pull the cloud state back onto this device
       useSyncMetaStore.getState().clearDirty(key);
@@ -267,13 +270,15 @@ async function pushDeck(user: AuthUser, deck: Deck) {
     DECKS_COLLECTION_ID,
     docId,
     {
-      userId: user.id,
-      deckId: deck.id,
-      title: deck.title,
-      documentIds: JSON.stringify(deck.documentIds),
-      cards: JSON.stringify(deck.cards),
-      createdAt: deck.createdAt,
-      updatedAt: Date.now(),
+      data: {
+        userId: user.id,
+        deckId: deck.id,
+        title: deck.title,
+        documentIds: JSON.stringify(deck.documentIds),
+        cards: JSON.stringify(deck.cards),
+        createdAt: deck.createdAt,
+        updatedAt: Date.now(),
+      },
     },
     user.id,
   );
