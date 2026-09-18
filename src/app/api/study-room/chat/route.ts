@@ -1,7 +1,6 @@
 import { getDocuments } from "@/lib/server/storage";
 import { verifyUser } from "@/lib/server/auth";
 import { chatCompletions, resolveAIConfig, streamContent, type LLMMessage } from "@/lib/server/ai";
-import { appwriteConfigured } from "@/lib/auth/appwrite";
 import type { ChatMessage } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -13,10 +12,8 @@ const MAX_HISTORY = 16;
 /** streaming chat grounded in the selected documents — responds with plain text deltas */
 export async function POST(req: Request) {
   // signed-in users only — this route spends AI credits
-  if (appwriteConfigured) {
-    const user = await verifyUser(req);
-    if (!user) return Response.json({ error: "auth_required" }, { status: 401 });
-  }
+  const user = await verifyUser(req);
+  if (!user) return Response.json({ error: "auth_required" }, { status: 401 });
 
   const body = (await req.json().catch(() => null)) as
     | { messages?: ChatMessage[]; documentIds?: string[] }

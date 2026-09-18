@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   Sparkles,
   SquareCheckBig,
+  Table2,
   UserRound,
   type LucideIcon,
 } from "lucide-react";
@@ -26,6 +27,7 @@ const NAV: Array<{ href: Route; label: string; icon: LucideIcon }> = [
   { href: "/todos", label: "Tasks", icon: SquareCheckBig },
   { href: "/homework", label: "Homework", icon: BookOpen },
   { href: "/grades", label: "Grades", icon: Calculator },
+  { href: "/timetable", label: "Timetable", icon: Table2 },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/study-room", label: "Study Room", icon: Sparkles },
 ];

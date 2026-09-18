@@ -13,8 +13,10 @@ import {
 import type { DocKind, StudyDoc } from "@/lib/types";
 import { useStudyRoomStore } from "@/lib/store/studyroom";
 import { STORAGE_BUCKET_ID, appwriteClient, getAuthHeaders } from "@/lib/auth/appwrite";
+import { useAuthStore } from "@/lib/store/auth";
 import { cn, formatBytes } from "@/lib/utils";
 import { EmptyState, SubjectDot } from "@/components/ui/bits";
+import AuthRequiredNotice from "@/components/study-room/AuthRequiredNotice";
 
 const KIND_ICONS: Record<DocKind, LucideIcon> = {
   pdf: FileText,
@@ -39,6 +41,7 @@ export default function DocumentsPanel() {
   const removeDocument = useStudyRoomStore((s) => s.removeDocument);
   const selectedDocIds = useStudyRoomStore((s) => s.selectedDocIds);
   const toggleSelectedDoc = useStudyRoomStore((s) => s.toggleSelectedDoc);
+  const signedIn = useAuthStore((s) => s.status) === "signed-in";
 
   const [uploading, setUploading] = useState<string[]>([]);
   const [error, setError] = useState("");
@@ -138,6 +141,12 @@ export default function DocumentsPanel() {
         </div>
 
         {error && <p className="mt-3 text-sm text-marker">{error}</p>}
+        {!signedIn && (
+          <p className="mt-3 rounded-lg border border-amber/40 bg-amber/10 px-3 py-2 text-xs text-ink-soft">
+            Not signed in — uploads need an account, so your files stay private. Use “Sign in to
+            sync” in the sidebar.
+          </p>
+        )}
         {bucketWarn && !error && (
           <p className="mt-3 text-xs text-ink-soft">
             File processed, but cloud storage isn't provisioned yet — the raw file was kept out of

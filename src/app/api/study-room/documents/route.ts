@@ -2,7 +2,6 @@ import { detectKind, listDocuments, saveDocument, toMeta } from "@/lib/server/st
 import { extractText } from "@/lib/server/extract";
 import { verifyUser } from "@/lib/server/auth";
 import { resolveAIConfig } from "@/lib/server/ai";
-import { appwriteConfigured } from "@/lib/auth/appwrite";
 import type { StudyDoc } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -11,9 +10,9 @@ const MAX_UPLOAD = 20 * 1024 * 1024; // 20 MB
 
 /** lists the signed-in user's document metadata + whether an AI provider is configured */
 export async function GET(req: Request) {
-  const user = appwriteConfigured ? await verifyUser(req) : null;
+  const user = await verifyUser(req);
   const documents = await listDocuments();
-  const mine = documents.filter((d) => !appwriteConfigured || d.owner === user);
+  const mine = documents.filter((d) => d.owner === user);
   return Response.json({
     configured: resolveAIConfig() !== null,
     documents: mine.map(toMeta),
@@ -22,11 +21,11 @@ export async function GET(req: Request) {
 
 /** upload one file (multipart field "file"), extract its text, store it */
 export async function POST(req: Request) {
-  const user = appwriteConfigured ? await verifyUser(req) : null;
-  if (appwriteConfigured && !user) {
+  const user = await verifyUser(req);
+  if (!user) {
     return Response.json({ error: "auth_required" }, { status: 401 });
   }
-  const owner = user ?? "local";
+  const owner = user;
   const form = await req.formData().catch(() => null);
   const file = form?.get("file");
   if (!(file instanceof File)) {

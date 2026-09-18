@@ -6,8 +6,10 @@ import type { ChatMessage } from "@/lib/types";
 import { useStudyRoomStore } from "@/lib/store/studyroom";
 import { cn, summarizeProviderError } from "@/lib/utils";
 import { getAuthHeaders } from "@/lib/auth/appwrite";
+import { useAuthStore } from "@/lib/store/auth";
 import Markdown from "@/components/study-room/Markdown";
 import SetupNotice from "@/components/study-room/SetupNotice";
+import AuthRequiredNotice from "@/components/study-room/AuthRequiredNotice";
 
 export default function ChatPanel({ configured }: { configured: boolean }) {
   const chat = useStudyRoomStore((s) => s.chat);
@@ -101,6 +103,8 @@ export default function ChatPanel({ configured }: { configured: boolean }) {
   };
 
   if (!configured) return <SetupNotice kind="chat" />;
+  const signedIn = useAuthStore((s) => s.status) === "signed-in";
+  if (!signedIn) return <AuthRequiredNotice feature="chat about your documents" />;
 
   const contextDocs = documents.filter((d) => selectedDocIds.includes(d.id));
   const contextChars = contextDocs.reduce((sum, d) => sum + d.chars, 0);

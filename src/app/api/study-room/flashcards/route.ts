@@ -1,7 +1,6 @@
 import { getDocuments } from "@/lib/server/storage";
 import { verifyUser } from "@/lib/server/auth";
 import { chatCompletions, extractJson, resolveAIConfig } from "@/lib/server/ai";
-import { appwriteConfigured } from "@/lib/auth/appwrite";
 import type { Flashcard } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -12,10 +11,8 @@ const MAX_TOTAL = 90_000;
 /** generates a flashcard deck from the given documents */
 export async function POST(req: Request) {
   // signed-in users only — this route spends AI credits
-  if (appwriteConfigured) {
-    const user = await verifyUser(req);
-    if (!user) return Response.json({ error: "auth_required" }, { status: 401 });
-  }
+  const user = await verifyUser(req);
+  if (!user) return Response.json({ error: "auth_required" }, { status: 401 });
   const body = (await req.json().catch(() => null)) as { documentIds?: string[] } | null;
   const ids = Array.isArray(body?.documentIds) ? body!.documentIds : [];
   if (ids.length === 0) {

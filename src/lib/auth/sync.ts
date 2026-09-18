@@ -19,6 +19,7 @@ import { useTodosStore } from "@/lib/store/todos";
 import { useGradesStore, normalizeGradeEntries } from "@/lib/store/grades";
 import { useEventsStore } from "@/lib/store/events";
 import { useHomeworkStore } from "@/lib/store/homework";
+import { useTimetableStore } from "@/lib/store/timetable";
 import { useStudyRoomStore } from "@/lib/store/studyroom";
 import type { Deck, StudyDoc } from "../types";
 
@@ -85,6 +86,16 @@ const KEYS: Record<string, KeyOps> = {
         homeworks: JSON.parse((doc.data as string) ?? "{}").homeworks ?? [],
       }),
     isEmpty: () => useHomeworkStore.getState().homeworks.length === 0,
+  },
+  timetable: {
+    read: () => ({
+      data: JSON.stringify({ entries: useTimetableStore.getState().entries }),
+    }),
+    apply: (doc) =>
+      useTimetableStore.setState({
+        entries: JSON.parse((doc.data as string) ?? "{}").entries ?? [],
+      }),
+    isEmpty: () => useTimetableStore.getState().entries.length === 0,
   },
   grades: {
     read: () => ({ data: JSON.stringify({ entries: useGradesStore.getState().entries }) }),
@@ -283,7 +294,16 @@ function scheduleDecks() {
 function subscribeStores() {
   if (subscribed) return;
   subscribed = true;
-  for (const key of ["subjects", "todos", "homework", "grades", "events", "studyroom", "chats"]) {
+  for (const key of [
+    "subjects",
+    "todos",
+    "homework",
+    "grades",
+    "events",
+    "timetable",
+    "studyroom",
+    "chats",
+  ]) {
     const store =
       key === "subjects"
         ? useSubjectsStore
@@ -295,7 +315,9 @@ function subscribeStores() {
               ? useGradesStore
               : key === "events"
                 ? useEventsStore
-                : useStudyRoomStore;
+                : key === "timetable"
+                  ? useTimetableStore
+                  : useStudyRoomStore;
     store.subscribe(() => schedulePush(key));
   }
   // decks live in the study-room store too, but sync as their own documents

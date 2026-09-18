@@ -15,8 +15,10 @@ import type { Deck, Flashcard } from "@/lib/types";
 import { useStudyRoomStore } from "@/lib/store/studyroom";
 import { cn, summarizeProviderError } from "@/lib/utils";
 import { getAuthHeaders } from "@/lib/auth/appwrite";
+import { useAuthStore } from "@/lib/store/auth";
 import { EmptyState } from "@/components/ui/bits";
 import SetupNotice from "@/components/study-room/SetupNotice";
+import AuthRequiredNotice from "@/components/study-room/AuthRequiredNotice";
 
 function shuffled(n: number) {
   const order = Array.from({ length: n }, (_, i) => i);
@@ -109,6 +111,8 @@ export default function FlashcardsPanel({ configured }: { configured: boolean })
   };
 
   if (!configured) return <SetupNotice kind="flashcards" />;
+  const signedIn = useAuthStore((s) => s.status) === "signed-in";
+  if (!signedIn) return <AuthRequiredNotice feature="generate flashcards" />;
 
   if (decks.length === 0) {
     return (

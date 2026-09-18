@@ -42,6 +42,18 @@ export interface Homework {
   createdAt: number;
 }
 
+export interface TimetableEntry {
+  /** normalized day: Mon, Tue, Wed, Thu, Fri, Sat, Sun */
+  day: string;
+  /** 1-based period number */
+  period: number;
+  /** e.g. "08:00 - 08:45" */
+  time?: string;
+  subject: string;
+  teacher?: string;
+  room?: string;
+}
+
 export type EventType = "study" | "deadline" | "exam" | "event";
 
 export interface StudyEvent {
