@@ -1,0 +1,50 @@
+name: semester
+description: Semester — your study desk, on the go. Flutter companion to the Semester web app.
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  appwrite: ^26.2.0
+  shared_preferences: ^2.5.5
+  crypto: ^3.0.7
+  uuid: ^4.6.0
+  http: ^1.6.0
+  file_picker: ^13.1.0
+  markdown_widget: ^2.3.2+8
+  firebase_core: ^4.15.0
+  firebase_messaging: ^16.7.0
+  flutter_local_notifications: ^22.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  # bundled typefaces — the same families the web app loads via next/font,
+  # shipped as assets so the design renders offline
+  fonts:
+    - family: Fraunces
+      fonts:
+        - asset: assets/fonts/Fraunces-VF.ttf
+        - asset: assets/fonts/Fraunces-Italic-VF.ttf
+          style: italic
+    - family: Instrument Sans
+      fonts:
+        - asset: assets/fonts/InstrumentSans-VF.ttf
+    - family: IBM Plex Mono
+      fonts:
+        - asset: assets/fonts/IBMPlexMono-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/IBMPlexMono-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/IBMPlexMono-SemiBold.ttf
+          weight: 600
