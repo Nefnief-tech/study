@@ -140,11 +140,11 @@ export default function TimetablePage() {
     }
   };
 
-  // auto-fetch once per page visit when enabled and credentials are stored
+  // auto-fetch on every visit when enabled and credentials are stored
   useEffect(() => {
     if (!hydrated) return;
     const p = usePortalStore.getState();
-    if (p.autoFetch && p.baseUrl && p.username && p.password && p.data === null) {
+    if (p.autoFetch && p.baseUrl && p.username && p.password) {
       void fetchNow();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
