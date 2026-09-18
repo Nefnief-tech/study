@@ -74,6 +74,10 @@ export default function TimetablePage() {
 
   const todayCol = DAY_ORDER[new Date().getDay() === 0 ? 6 : new Date().getDay() - 1];
 
+  /** substitute-plan entries that affect one timetable cell (day + period + subject).
+   *  course codes are CASE-SENSITIVE: 2ph1 ≠ 2PH1. A sub matches a lesson when
+   *  the course code equals the lesson's subject OR its teacher — the timetable
+   *  JSON carries the course code in the teacher field. */
   const relevantSubs: PortalSub[] = portal.data
     ? portal.data.days.flatMap((d) => d.entries).filter((s) =>
         portal.data!.courses.some((c) => c.trim() === s.course.trim()))
@@ -84,7 +88,9 @@ export default function TimetablePage() {
       (s) =>
         PORTAL_WEEKDAY[s.weekday] === day &&
         parseInt(s.period, 10) === period &&
-        items.some((e) => e.subject.trim() === s.course.trim()),
+        items.some(
+          (e) => e.subject.trim() === s.course.trim() || e.teacher?.trim() === s.course.trim(),
+        ),
     );
 
   const load = (text: string) => {
@@ -416,6 +422,8 @@ export default function TimetablePage() {
                                   {s.cancelled
                                     ? "cancelled"
                                     : `→ ${s.substitute || "?"}${s.room ? ` · ${s.room}` : ""}`}
+                                  {" · "}
+                                  {s.date.slice(0, 6)}
                                 </span>
                               ))}
                             </div>
@@ -442,6 +450,58 @@ export default function TimetablePage() {
             }
           />
         )
+      )}
+
+      {/* substitutions list — all the info */}
+      {relevantSubs.length > 0 && (
+        <div className="mt-8">
+          <h2 className="mb-3 font-display text-xl font-semibold tracking-tight">Substitutions</h2>
+          <div className="space-y-4">
+            {portal.data?.days.map((day) => {
+              const daySubs = relevantSubs.filter((s) => s.date === day.date);
+              if (daySubs.length === 0) return null;
+              return (
+                <div key={day.date} className="card px-5 py-4">
+                  <p className="font-mono text-[11px] text-ink-soft">
+                    {day.weekday}., {day.date}
+                  </p>
+                  <ul className="mt-2 space-y-1.5">
+                    {daySubs.map((s) => (
+                      <li
+                        key={s.period + s.course + (s.substitute ?? "")}
+                        className="flex flex-wrap items-center gap-2 text-sm"
+                      >
+                        <span
+                          className={cn(
+                            "chip font-mono",
+                            s.cancelled
+                              ? "border-marker/40 bg-marker/10 text-marker"
+                              : "border-amber/40 bg-amber/10 text-amber",
+                          )}
+                        >
+                          {s.period}.
+                        </span>
+                        <span className="font-medium">
+                          {s.courseOld && (
+                            <span className="mr-1 text-ink-soft line-through">{s.courseOld}</span>
+                          )}
+                          {s.course}
+                        </span>
+                        {!s.cancelled && s.substitute && (
+                          <span className="text-ink-soft">→ {s.substitute}</span>
+                        )}
+                        {s.room && (
+                          <span className="font-mono text-xs text-ink-soft">room {s.room}</span>
+                        )}
+                        {s.info && <span className="text-xs text-ink-soft">{s.info}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       )}
     </div>
   );
