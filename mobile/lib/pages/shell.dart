@@ -37,7 +37,7 @@ class AppShell extends StatefulWidget {
   State<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends State<AppShell> {
+class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   static const _tabs = [
     ('Overview', Icons.dashboard_outlined, Icons.dashboard),
     ('Tasks', Icons.checklist_outlined, Icons.checklist),
@@ -49,6 +49,7 @@ class _AppShellState extends State<AppShell> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     initSync();
     SemesterApi.refreshDocuments();
     PushService.init();
@@ -66,8 +67,17 @@ class _AppShellState extends State<AppShell> {
 
   @override
   void dispose() {
-    AppNav.I.tab.removeListener(() {});
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // the process is suspended in background — realtime drops and events are
+    // missed; pull everything again when the user comes back
+    if (state == AppLifecycleState.resumed) {
+      resync();
+    }
   }
 
   String get _currentLabel {

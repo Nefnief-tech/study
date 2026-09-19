@@ -21,6 +21,8 @@ interface StudyRoomState {
   deletedDeckIds: string[];
   addDeck: (deck: Omit<Deck, "id" | "createdAt" | "updatedAt">) => Deck;
   removeDeck: (id: string) => void;
+  /** deck deleted on ANOTHER device (realtime) — no deletion marker */
+  removeDeckSilently: (id: string) => void;
 
   chat: ChatMessage[];
   appendMessage: (message: ChatMessage) => void;
@@ -62,6 +64,8 @@ export const useStudyRoomStore = create<StudyRoomState>()(
           decks: s.decks.filter((d) => d.id !== id),
           deletedDeckIds: [...s.deletedDeckIds, id],
         })),
+      removeDeckSilently: (id) =>
+        set((s) => ({ decks: s.decks.filter((d) => d.id !== id) })),
 
       chat: [],
       appendMessage: (message) => set((s) => ({ chat: [...s.chat, message] })),

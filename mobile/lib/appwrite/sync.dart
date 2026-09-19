@@ -171,6 +171,11 @@ bool applyingRemote = false;
 bool subscribed = false;
 List<String>? appliedDeckIds;
 
+/// our own document writes, by Appwrite document id → the updatedAt we wrote;
+/// realtime events with the same stamp are our own echoes, not remote changes
+final _lastPushedAt = <String, int>{};
+RealtimeSubscription? _realtimeSub;
+
 Future<void> _upsertDocument(
     String collection, String docId, Map<String, dynamic> payload, String userId) async {
   final permissions = [
@@ -250,10 +255,11 @@ Future<void> _pushSnapshot(AuthUser user, String key) async {
     final docId = await snapshotDocId(user.id, _collectionFor(key), key);
     // new Appwrite API: `data` is the attributes object (was: a JSON string
     // per attribute — the old flat shape now fails with "Unknown attribute")
+    final updatedAt = DateTime.now().millisecondsSinceEpoch;
     final attributes = <String, dynamic>{
       'userId': user.id,
       ...ops.read(),
-      'updatedAt': DateTime.now().millisecondsSinceEpoch,
+      'updatedAt': updatedAt,
     };
     if (!ops.omitKey) attributes['key'] = key;
     final payload = {'data': attributes};
@@ -268,6 +274,7 @@ Future<void> _pushSnapshot(AuthUser user, String key) async {
     }
 
     await _upsertDocument(_collectionFor(key), docId, payload, user.id);
+    _lastPushedAt[docId] = updatedAt; // own echo — ignore in realtime
     Stores.I.syncMeta.clearDirty(key);
     auth.setSynced(DateTime.now().millisecondsSinceEpoch);
   } catch (e) {
@@ -324,6 +331,7 @@ Future<Deck?> _getDeckDoc(AuthUser user, String deckId) async {
 
 Future<void> _pushDeck(AuthUser user, Deck deck) async {
   final docId = await snapshotDocId(user.id, kDecksCollectionId, deck.id);
+  final updatedAt = DateTime.now().millisecondsSinceEpoch;
   await _upsertDocument(
     kDecksCollectionId,
     docId,
@@ -335,11 +343,12 @@ Future<void> _pushDeck(AuthUser user, Deck deck) async {
         'documentIds': jsonEncode(deck.documentIds),
         'cards': jsonEncode(deck.cards.map((c) => c.toJson()).toList()),
         'createdAt': deck.createdAt,
-        'updatedAt': DateTime.now().millisecondsSinceEpoch,
+        'updatedAt': updatedAt,
       },
     },
     user.id,
   );
+  _lastPushedAt[docId] = updatedAt; // own echo — ignore in realtime
 }
 
 Future<void> _syncDecks(AuthUser user) async {
@@ -509,6 +518,7 @@ Future<void> initSync() async {
   }
   auth.setAuth(user, SyncStatus.signedIn);
   _subscribeStores();
+  _startRealtime(user);
   await reconcile(user);
 }
 
@@ -523,6 +533,7 @@ Future<void> signIn(String email, String password) async {
   }
   Stores.I.auth.setAuth(user, SyncStatus.signedIn);
   _subscribeStores();
+  _startRealtime(user);
   await reconcile(user);
 }
 
@@ -536,8 +547,84 @@ Future<void> signOut() async {
   try {
     await account.deleteSession(sessionId: 'current');
   } catch (_) {}
+  _stopRealtime();
+  _lastPushedAt.clear();
   invalidateJwtCache();
   Stores.I.auth.setAuth(null, SyncStatus.signedOut);
+}
+
+/* ---------------- realtime (cross-device pulls) ---------------- */
+
+void _startRealtime(AuthUser user) {
+  _stopRealtime();
+  _realtimeSub = Realtime(appwriteClient).subscribe([
+    'databases.$kDatabaseId.collections.$kSnapshotsCollectionId.documents',
+    'databases.$kDatabaseId.collections.$kChatsCollectionId.documents',
+    'databases.$kDatabaseId.collections.$kDecksCollectionId.documents',
+  ]);
+  _realtimeSub!.stream.listen(
+    (msg) {
+      try {
+        _onRealtimeEvent(msg);
+      } catch (_) {
+        // a malformed event must never crash the app
+      }
+    },
+    onError: (_) {},
+  );
+}
+
+void _stopRealtime() {
+  _realtimeSub?.close();
+  _realtimeSub = null;
+}
+
+void _onRealtimeEvent(RealtimeMessage msg) {
+  final auth = Stores.I.auth;
+  final user = auth.user;
+  if (auth.status != SyncStatus.signedIn || user == null) return;
+  final doc = msg.payload;
+  if (doc['userId'] is String && doc['userId'] != user.id) return; // another user's doc
+
+  // deletions only matter for decks (snapshots are upserted, never deleted)
+  if (msg.events.any((e) => e.endsWith('.delete'))) {
+    final deckId = doc['deckId'];
+    if (deckId is String && doc['userId'] == user.id) {
+      applyingRemote = true;
+      _room.removeDeckSilently(deckId);
+      applyingRemote = false;
+    }
+    return;
+  }
+
+  // ignore echoes of our own writes
+  final docId = doc[r'$id'] as String?;
+  final updatedAt = (doc['updatedAt'] as num?)?.toInt() ?? 0;
+  if (docId != null && _lastPushedAt[docId] == updatedAt) return;
+
+  applyingRemote = true;
+  try {
+    final key = doc['key'] as String?;
+    if (key != null && _keys.containsKey(key)) {
+      _keys[key]!.apply(doc);
+    } else if (doc['deckId'] is String) {
+      _room.upsertDeck(_docToDeck(doc));
+    } else if (doc['messages'] is String) {
+      _keys['chats']!.apply(doc);
+    }
+  } finally {
+    applyingRemote = false;
+  }
+}
+
+/// pulls the cloud state again — called when the app returns to the foreground,
+/// so changes missed while the process was suspended are not lost
+Future<void> resync() async {
+  final auth = Stores.I.auth;
+  final user = auth.user;
+  if (auth.status != SyncStatus.signedIn || user == null) return;
+  if (applyingRemote) return;
+  await reconcile(user);
 }
 
 /// manual push of everything (used by the "Sync now" button)

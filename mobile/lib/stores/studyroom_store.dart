@@ -113,6 +113,14 @@ class StudyroomStore extends PersistedStore {
     persist();
   }
 
+  /// removes a deck that was deleted on ANOTHER device — no deletion marker,
+  /// so the (already gone) cloud doc isn't deleted again
+  void removeDeckSilently(String id) {
+    _decks = _decks.where((d) => d.id != id).toList();
+    notifyListeners();
+    persist();
+  }
+
   void replaceDecks(List<Deck> decks) {
     _decks = decks;
     notifyListeners();

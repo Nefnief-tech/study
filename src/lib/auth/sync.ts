@@ -159,6 +159,88 @@ let subscribed = false;
 let appliedDeckIds: string[] | null = null;
 const pushTimers: Record<string, ReturnType<typeof setTimeout>> = {};
 
+/* ---------------- realtime (cross-device pulls) ---------------- */
+
+let realtimeUnsub: (() => void) | null = null;
+/** our own document writes, by Appwrite document id → the updatedAt we wrote;
+ *  realtime events with the same stamp are our own echoes, not remote changes */
+const lastPushedAt = new Map<string, number>();
+
+function startRealtime(user: AuthUser) {
+  stopRealtime();
+  if (!appwriteClient) return;
+  const channels = [
+    `databases.${DATABASE_ID}.collections.${SNAPSHOTS_COLLECTION_ID}.documents`,
+    `databases.${DATABASE_ID}.collections.${CHATS_COLLECTION_ID}.documents`,
+    `databases.${DATABASE_ID}.collections.${DECKS_COLLECTION_ID}.documents`,
+  ];
+  realtimeUnsub = appwriteClient.subscribe(channels, (response: {
+    events: string[];
+    payload: Record<string, unknown>;
+  }) => {
+    try {
+      handleRealtimeEvent(response, user);
+    } catch {
+      // a malformed event must never break the tab
+    }
+  });
+}
+
+function stopRealtime() {
+  realtimeUnsub?.();
+  realtimeUnsub = null;
+}
+
+function handleRealtimeEvent(
+  response: { events: string[]; payload: Record<string, unknown> },
+  user: AuthUser,
+) {
+  const { user: currentUser, status } = useAuthStore.getState();
+  if (status !== "signed-in" || currentUser?.id !== user.id) return;
+  const doc = response.payload;
+  if (doc.userId !== user.id) return; // another user's doc
+
+  // deletions only matter for decks (snapshots are upserted, never deleted)
+  if (response.events.some((e) => e.endsWith(".delete"))) {
+    if (typeof doc.deckId === "string") {
+      applyingRemote = true;
+      useStudyRoomStore.getState().removeDeckSilently(doc.deckId);
+      applyingRemote = false;
+    }
+    return;
+  }
+
+  // ignore echoes of our own writes
+  const docId = doc.$id as string | undefined;
+  const updatedAt = typeof doc.updatedAt === "number" ? doc.updatedAt : 0;
+  if (docId !== undefined && lastPushedAt.get(docId) === updatedAt) return;
+
+  applyingRemote = true;
+  try {
+    const key = doc.key as string | undefined;
+    if (key !== undefined && KEYS[key] !== undefined) {
+      KEYS[key].apply(doc);
+    } else if (typeof doc.deckId === "string") {
+      const deckId = doc.deckId;
+      const remoteDeck = {
+        id: deckId,
+        title: (doc.title as string) ?? "Deck",
+        documentIds: JSON.parse((doc.documentIds as string) ?? "[]"),
+        createdAt: (doc.createdAt as number) ?? 0,
+        updatedAt: (doc.updatedAt as number) ?? 0,
+        cards: JSON.parse((doc.cards as string) ?? "[]"),
+      } satisfies Deck;
+      useStudyRoomStore.setState((s) => ({
+        decks: [...s.decks.filter((x) => x.id !== deckId), remoteDeck],
+      }));
+    } else if (typeof doc.messages === "string") {
+      KEYS.chats.apply(doc);
+    }
+  } finally {
+    applyingRemote = false;
+  }
+}
+
 async function upsertDocument(collection: string, docId: string, payload: Record<string, unknown>, userId: string) {
   const permissions = [`read("user:${userId}")`, `write("user:${userId}")`];
   try {
@@ -204,7 +286,8 @@ async function pushSnapshot(userId: string, key: string) {
     const docId = await snapshotDocId(userId, collectionFor(key), key);
     // new Appwrite API: `data` is the attributes object (was: a JSON string
     // per attribute — the old flat shape now fails with "Unknown attribute")
-    const attributes: Record<string, unknown> = { userId, ...ops.read(), updatedAt: Date.now() };
+    const updatedAt = Date.now();
+    const attributes: Record<string, unknown> = { userId, ...ops.read(), updatedAt };
     if (!ops.omitKey) attributes.key = key;
     const payload = { data: attributes };
 
@@ -217,6 +300,7 @@ async function pushSnapshot(userId: string, key: string) {
     }
 
     await upsertDocument(collectionFor(key), docId, payload, userId);
+    lastPushedAt.set(docId, updatedAt); // own echo — ignore in realtime
     useSyncMetaStore.getState().clearDirty(key);
     setSynced(Date.now());
   } catch (e) {
@@ -266,6 +350,7 @@ async function getDeckDoc(user: AuthUser, deckId: string): Promise<Deck | null> 
 
 async function pushDeck(user: AuthUser, deck: Deck) {
   const docId = await snapshotDocId(user.id, DECKS_COLLECTION_ID, deck.id);
+  const updatedAt = Date.now();
   await upsertDocument(
     DECKS_COLLECTION_ID,
     docId,
@@ -277,11 +362,12 @@ async function pushDeck(user: AuthUser, deck: Deck) {
         documentIds: JSON.stringify(deck.documentIds),
         cards: JSON.stringify(deck.cards),
         createdAt: deck.createdAt,
-        updatedAt: Date.now(),
+        updatedAt,
       },
     },
     user.id,
   );
+  lastPushedAt.set(docId, updatedAt); // own echo — ignore in realtime
 }
 
 async function syncDecks(user: AuthUser) {
@@ -435,6 +521,19 @@ export async function initSync() {
   });
   window.addEventListener("offline", updateOnline);
 
+  // a background tab misses realtime events — pull everything on return
+  let hiddenAt = 0;
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      hiddenAt = Date.now();
+      return;
+    }
+    const { user, status } = useAuthStore.getState();
+    if (status === "signed-in" && user && hiddenAt && Date.now() - hiddenAt > 30_000) {
+      void reconcile(user);
+    }
+  });
+
   const user = await getCurrentUser();
   if (!user) {
     setAuth(null, "signed-out");
@@ -442,6 +541,7 @@ export async function initSync() {
   }
   setAuth(user, "signed-in");
   subscribeStores();
+  startRealtime(user);
   await reconcile(user);
 }
 
@@ -454,6 +554,7 @@ export async function signIn(email: string, password: string) {
   const user = await getCurrentUser();
   useAuthStore.getState().setAuth(user, "signed-in");
   subscribeStores();
+  if (user) startRealtime(user);
   if (user) await reconcile(user);
 }
 
@@ -466,6 +567,8 @@ export async function signUp(name: string, email: string, password: string) {
 /** signs out; local data deliberately stays on the device */
 export async function signOut() {
   if (account) await account.deleteSession("current").catch(() => {});
+  stopRealtime();
+  lastPushedAt.clear();
   useAuthStore.getState().setAuth(null, "signed-out");
 }
 
