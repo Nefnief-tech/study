@@ -1,5 +1,3 @@
-"use client";
-
 import { ID } from "appwrite";
 import {
   CHATS_COLLECTION_ID,
@@ -9,8 +7,8 @@ import {
   account,
   appwriteClient,
   appwriteConfigured,
-  databases,
   getCurrentUser,
+  getAuthHeaders,
   type AuthUser,
 } from "./appwrite";
 import { useAuthStore, useSyncMetaStore } from "@/lib/store/auth";
@@ -21,7 +19,7 @@ import { useEventsStore } from "@/lib/store/events";
 import { useHomeworkStore } from "@/lib/store/homework";
 import { useTimetableStore } from "@/lib/store/timetable";
 import { useStudyRoomStore } from "@/lib/store/studyroom";
-import type { Deck, StudyDoc } from "../types";
+import type { Deck, GradeEntry, Homework, StudyEvent, Subject, Todo } from "@/lib/types";
 import type { PortalSub } from "../server/portal";
 
 /** shape returned by /api/portal/fetch (see timetable page) */
@@ -32,24 +30,28 @@ export interface PortalPlanJson {
 }
 
 /**
- * Sync model: **the cloud is the source of truth on page load.**
+ * Sync model, two layers:
  *
- *  - On signed-in load, every store is replaced by its cloud snapshot
- *    ("load from the db first").
- *  - Afterwards each local change marks the store dirty and is pushed
- *    (debounced) — "write afterwards".
- *  - The only exception: local edits that never made it up (offline push
- *    failure) keep their dirty flag and win over the cloud on the next load,
- *    so offline work is never silently clobbered.
+ * 1. ROW COLLECTIONS (subjects/todos/homeworks/grades/events — Appwrite
+ *    tables, one row per entity, rowId = the entity UUID):
+ *      push  = diff the local store against the last-synced row digests and
+ *              upsert changed rows / soft-delete (deleted=true) removed rows
+ *      pull  = fetch all rows of the user and merge — rows with pending local
+ *              edits win, remote rows otherwise, deleted rows remove locally
+ *      realtime = single-row events through the same merge
+ *    A device can therefore never wipe data it hasn't seen: it only touches
+ *    rows it actually changed.
  *
- * Layout: subjects/todos/grades/events + the study-room selection live as one
- * snapshot document per store in `snapshots`; chats live in `chats` (one doc
- * per user) and decks in `decks` (one doc per deck). All are per-user
- * documents; permissions restrict them to their owner.
+ * 2. BLOBS (timetable / studyroom / chats / decks / portal — wholesale-
+ *    replaced by design): cloud-wins-on-load with the dirty-baseline rule,
+ *    debounced push, exactly as before.
  */
 
 const PUSH_DEBOUNCE_MS = 1200;
 const MAX_CHAT_MESSAGES = 120;
+
+/** REST base for row calls (the Dart/JS SDK models are bypassed — see git) */
+const REST_BASE = "https://fra.cloud.appwrite.io/v1";
 
 async function snapshotDocId(userId: string, collection: string, key: string) {
   const digest = await crypto.subtle.digest(
@@ -62,436 +64,524 @@ async function snapshotDocId(userId: string, collection: string, key: string) {
     .slice(0, 32);
 }
 
-interface KeyOps {
-  /** document payload (everything except userId/key/updatedAt) */
-  read: () => Record<string, unknown>;
-  /** hydrate the store from a stored document */
-  apply: (doc: Record<string, unknown>) => void;
-  isEmpty: () => boolean;
-  /** set when the collection has no `key` attribute (single-doc-per-user) */
-  omitKey?: boolean;
+/* ================================================================== */
+/* ROW COLLECTIONS                                                     */
+/* ================================================================== */
+
+type RowData = Record<string, unknown>;
+
+interface RowStoreDef {
+  table: string;
+  list: () => Array<{ id: string }>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  upsertOne: (entity: any) => void;
+  removeOne: (id: string) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  toRow: (entity: any) => RowData;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  fromRow: (row: RowData) => any;
 }
 
-const KEYS: Record<string, KeyOps> = {
+const str = (v: unknown) => (typeof v === "string" ? v : "");
+const num = (v: unknown) => (typeof v === "number" ? v : 0);
+const bool = (v: unknown) => v === true;
+
+const ROW_STORES: Record<string, RowStoreDef> = {
   subjects: {
-    read: () => ({ data: JSON.stringify({ subjects: useSubjectsStore.getState().subjects }) }),
-    apply: (doc) =>
-      useSubjectsStore.setState({ subjects: JSON.parse((doc.data as string) ?? "{}").subjects ?? [] }),
-    isEmpty: () => useSubjectsStore.getState().subjects.length === 0,
+    table: "subjects",
+    list: () => useSubjectsStore.getState().subjects,
+    upsertOne: (s) => useSubjectsStore.getState().upsertOne(s),
+    removeOne: (id) => useSubjectsStore.getState().removeOne(id),
+    toRow: (s) => {
+      const subject = s as Subject;
+      return { name: subject.name, color: subject.color, deleted: false };
+    },
+    fromRow: (row) =>
+      ({
+        id: String(row.$id),
+        name: str(row.name),
+        color: str(row.color) || "#3E6B4F",
+      }) as unknown as Subject,
   },
   todos: {
-    read: () => ({ data: JSON.stringify({ todos: useTodosStore.getState().todos }) }),
-    apply: (doc) =>
-      useTodosStore.setState({ todos: JSON.parse((doc.data as string) ?? "{}").todos ?? [] }),
-    isEmpty: () => useTodosStore.getState().todos.length === 0,
+    table: "todos",
+    list: () => useTodosStore.getState().todos,
+    upsertOne: (t) => useTodosStore.getState().upsertOne(t),
+    removeOne: (id) => useTodosStore.getState().removeOne(id),
+    toRow: (t) => {
+      const todo = t as Todo;
+      return {
+        title: todo.title,
+        notes: todo.notes ?? "",
+        due: todo.due ?? "",
+        priority: todo.priority,
+        subjectId: todo.subjectId ?? "",
+        done: todo.done,
+        createdAt: todo.createdAt,
+        deleted: false,
+      };
+    },
+    fromRow: (row) =>
+      ({
+        id: String(row.$id),
+        title: str(row.title),
+        notes: str(row.notes) || undefined,
+        due: str(row.due) || undefined,
+        priority: (str(row.priority) || "medium") as Todo["priority"],
+        subjectId: str(row.subjectId) || undefined,
+        done: bool(row.done),
+        createdAt: num(row.createdAt),
+      }) as unknown as Todo,
   },
   homework: {
-    read: () => ({
-      data: JSON.stringify({ homeworks: useHomeworkStore.getState().homeworks }),
-    }),
-    apply: (doc) =>
-      useHomeworkStore.setState({
-        homeworks: JSON.parse((doc.data as string) ?? "{}").homeworks ?? [],
-      }),
-    isEmpty: () => useHomeworkStore.getState().homeworks.length === 0,
-  },
-  timetable: {
-    read: () => ({
-      data: JSON.stringify({ entries: useTimetableStore.getState().entries }),
-    }),
-    apply: (doc) =>
-      useTimetableStore.setState({
-        entries: JSON.parse((doc.data as string) ?? "{}").entries ?? [],
-      }),
-    isEmpty: () => useTimetableStore.getState().entries.length === 0,
+    table: "homeworks",
+    list: () => useHomeworkStore.getState().homeworks,
+    upsertOne: (h) => useHomeworkStore.getState().upsertOne(h),
+    removeOne: (id) => useHomeworkStore.getState().removeOne(id),
+    toRow: (h) => {
+      const hw = h as Homework;
+      return {
+        title: hw.title,
+        notes: hw.notes ?? "",
+        due: hw.due ?? "",
+        priority: hw.priority,
+        subjectId: hw.subjectId ?? "",
+        done: hw.done,
+        createdAt: hw.createdAt,
+        deleted: false,
+      };
+    },
+    fromRow: (row) =>
+      ({
+        id: String(row.$id),
+        title: str(row.title),
+        notes: str(row.notes) || undefined,
+        due: str(row.due) || undefined,
+        priority: (str(row.priority) || "medium") as Homework["priority"],
+        subjectId: str(row.subjectId) || undefined,
+        done: bool(row.done),
+        createdAt: num(row.createdAt),
+      }) as unknown as Homework,
   },
   grades: {
-    read: () => ({ data: JSON.stringify({ entries: useGradesStore.getState().entries }) }),
-    apply: (doc) =>
-      useGradesStore.setState({
-        entries: normalizeGradeEntries(
-          JSON.parse((doc.data as string) ?? "{}").entries ?? [],
-        ),
-      }),
-    isEmpty: () => useGradesStore.getState().entries.length === 0,
+    table: "grades",
+    list: () => useGradesStore.getState().entries,
+    upsertOne: (g) => useGradesStore.getState().upsertOne(g),
+    removeOne: (id) => useGradesStore.getState().removeOne(id),
+    toRow: (g) => {
+      const entry = g as GradeEntry;
+      return {
+        subjectId: entry.subjectId ?? "",
+        title: entry.title,
+        points: Math.round(entry.points),
+        weight: Number(entry.weight),
+        date: entry.date ?? "",
+        deleted: false,
+      };
+    },
+    fromRow: (row) =>
+      ({
+        id: String(row.$id),
+        subjectId: str(row.subjectId) || undefined,
+        title: str(row.title),
+        points: num(row.points),
+        weight: num(row.weight) || 1,
+        date: str(row.date) || undefined,
+      }) as unknown as GradeEntry,
   },
   events: {
-    read: () => ({ data: JSON.stringify({ events: useEventsStore.getState().events }) }),
-    apply: (doc) =>
-      useEventsStore.setState({ events: JSON.parse((doc.data as string) ?? "{}").events ?? [] }),
-    isEmpty: () => useEventsStore.getState().events.length === 0,
+    table: "events",
+    list: () => useEventsStore.getState().events,
+    upsertOne: (e) => useEventsStore.getState().upsertOne(e),
+    removeOne: (id) => useEventsStore.getState().removeOne(id),
+    toRow: (e) => {
+      const event = e as StudyEvent;
+      return {
+        title: event.title,
+        date: event.date,
+        time: event.time ?? "",
+        type: event.type,
+        subjectId: event.subjectId ?? "",
+        notes: event.notes ?? "",
+        deleted: false,
+      };
+    },
+    fromRow: (row) =>
+      ({
+        id: String(row.$id),
+        title: str(row.title),
+        date: str(row.date),
+        time: str(row.time) || undefined,
+        type: (str(row.type) || "event") as StudyEvent["type"],
+        subjectId: str(row.subjectId) || undefined,
+        notes: str(row.notes) || undefined,
+      }) as unknown as StudyEvent,
+  },
+};
+
+const ROW_STORE_KEYS = Object.keys(ROW_STORES);
+
+async function sha256hex(input: string) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function rowDigest(entity: { id: string }, def: RowStoreDef) {
+  return sha256hex(JSON.stringify(def.toRow(entity)));
+}
+
+/* ---------------- row REST calls (JWT) ---------------- */
+
+const rowsUri = (table: string, rowId?: string) =>
+  `${REST_BASE}/databases/${DATABASE_ID}/tables/${table}/rows${rowId ? `/${rowId}` : ""}`;
+
+async function restListRows(table: string, userId: string): Promise<Array<RowData & { $id: string }>> {
+  const headers = await getAuthHeaders();
+  const queries = JSON.stringify([`equal("userId","${userId}")`, "limit(100)"]);
+  const res = await fetch(
+    `${REST_BASE}/databases/${DATABASE_ID}/tables/${table}/rows?queries=${encodeURIComponent(queries)}`,
+    { headers },
+  );
+  if (!res.ok) throw new Error(`list ${table} → ${res.status}`);
+  const json = (await res.json()) as { rows?: Array<RowData & { $id: string }> };
+  return json.rows ?? [];
+}
+
+async function restUpsertRow(table: string, rowId: string, data: RowData, userId: string) {
+  const headers = { "content-type": "application/json", ...(await getAuthHeaders()) };
+  let res = await fetch(rowsUri(table, rowId), {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ data }),
+  });
+  if (res.status === 404) {
+    res = await fetch(rowsUri(table), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        rowId,
+        data,
+        permissions: [`read("user:${userId}")`, `write("user:${userId}")`],
+      }),
+    });
+  }
+  if (!res.ok) {
+    throw new Error(`upsert ${table}/${rowId} → ${res.status}: ${(await res.text()).slice(0, 120)}`);
+  }
+}
+
+async function restSoftDeleteRow(table: string, rowId: string) {
+  const headers = { "content-type": "application/json", ...(await getAuthHeaders()) };
+  const res = await fetch(rowsUri(table, rowId), {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ data: { deleted: true } }),
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`delete ${table}/${rowId} → ${res.status}`);
+  }
+}
+
+/* ---------------- row push (diff) + pull (merge) ---------------- */
+
+const rowPushTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+
+function scheduleRowSync(storeKey: string) {
+  const { user, status } = useAuthStore.getState();
+  if (status !== "signed-in" || !user) return;
+  clearTimeout(rowPushTimers[storeKey]);
+  rowPushTimers[storeKey] = setTimeout(() => void syncRows(storeKey, user), PUSH_DEBOUNCE_MS);
+}
+
+/** diff local store vs last-synced digests → upserts + soft-deletes */
+async function syncRows(storeKey: string, user: AuthUser) {
+  const def = ROW_STORES[storeKey];
+  const meta = useSyncMetaStore.getState();
+  const digests = { ...(meta.rowDigests[storeKey] ?? {}) };
+
+  const current = def.list();
+  const currentDigests: Record<string, string> = {};
+  for (const entity of current) {
+    const digest = await rowDigest(entity, def);
+    currentDigests[entity.id] = digest;
+    if (digests[entity.id] !== digest) {
+      await restUpsertRow(def.table, entity.id, def.toRow(entity), user.id);
+    }
+  }
+
+  // rows the cloud knows that vanished locally → soft-delete
+  for (const id of Object.keys(digests)) {
+    if (currentDigests[id] === undefined) {
+      await restSoftDeleteRow(def.table, id);
+      delete digests[id];
+    }
+  }
+
+  useSyncMetaStore.getState().setRowDigests(storeKey, digests);
+}
+
+/** merge pulled rows into a store; locally-changed rows win */
+async function mergeRows(storeKey: string, rows: Array<RowData & { $id: string }>) {
+  const def = ROW_STORES[storeKey];
+  const digests = { ...(useSyncMetaStore.getState().rowDigests[storeKey] ?? {}) };
+  const current = def.list();
+  const byId = new Map(current.map((e) => [e.id, e]));
+
+  for (const row of rows) {
+    const id = String(row.$id);
+    if (row.deleted === true) {
+      if (byId.has(id)) def.removeOne(id);
+      delete digests[id];
+      continue;
+    }
+    const local = byId.get(id);
+    if (local) {
+      const localDigest = await rowDigest(local, def);
+      if (localDigest !== digests[id]) continue; // pending local edit wins
+    }
+    const entity = def.fromRow(row);
+    def.upsertOne(entity);
+    digests[id] = await rowDigest(entity, def);
+  }
+  useSyncMetaStore.getState().setRowDigests(storeKey, digests);
+}
+
+async function pullRows(storeKey: string, user: AuthUser) {
+  const def = ROW_STORES[storeKey];
+  const rows = await restListRows(def.table, user.id);
+  await mergeRows(storeKey, rows);
+}
+
+/** single realtime row event → same merge as a pull */
+async function mergeRowEvent(storeKey: string, payload: RowData & { $id: string }) {
+  await mergeRows(storeKey, [payload]);
+}
+
+/* ================================================================== */
+/* BLOB STORES (timetable / studyroom / chats / decks)                 */
+/* ================================================================== */
+
+interface BlobOps {
+  key: string;
+  collection: string;
+  read: () => Record<string, unknown>;
+  apply: (doc: Record<string, unknown>) => void;
+  isEmpty: () => boolean;
+}
+
+const BLOB_KEYS: Record<string, BlobOps> = {
+  timetable: {
+    key: "timetable",
+    collection: SNAPSHOTS_COLLECTION_ID,
+    read: () => ({ data: JSON.stringify({ entries: useTimetableStore.getState().entries }) }),
+    apply: (doc) => {
+      try {
+        const parsed = JSON.parse((doc.data as string) ?? "{}");
+        const list = Array.isArray(parsed.entries) ? parsed.entries : [];
+        useTimetableStore.getState().replaceEntries(
+          list.map((e: Record<string, unknown>) => ({
+            day: String(e.day ?? "Mon"),
+            period: Number(e.period ?? 1),
+            time: typeof e.time === "string" ? e.time : undefined,
+            subject: String(e.subject ?? ""),
+            teacher: typeof e.teacher === "string" ? e.teacher : undefined,
+            room: typeof e.room === "string" ? e.room : undefined,
+          })),
+        );
+      } catch {
+        // corrupted blob — keep the local timetable
+      }
+    },
+    isEmpty: () => useTimetableStore.getState().entries.length === 0,
   },
   studyroom: {
-    read: () => ({
-      data: JSON.stringify({
-        selectedDocIds: useStudyRoomStore.getState().selectedDocIds,
-        deckIds: useStudyRoomStore.getState().decks.map((d) => d.id),
-      }),
-    }),
+    key: "studyroom",
+    collection: SNAPSHOTS_COLLECTION_ID,
+    read: () => {
+      const room = useStudyRoomStore.getState();
+      return {
+        data: JSON.stringify({
+          selectedDocIds: room.selectedDocIds,
+          deckIds: room.decks.map((d) => d.id),
+        }),
+      };
+    },
     apply: (doc) => {
-      const parsed = JSON.parse((doc.data as string) ?? "{}");
-      appliedDeckIds = parsed.deckIds ?? null;
-      useStudyRoomStore.setState({
-        selectedDocIds: parsed.selectedDocIds ?? [],
-      });
+      let parsed: Record<string, unknown> = {};
+      try {
+        parsed = JSON.parse((doc.data as string) ?? "{}");
+      } catch {
+        return;
+      }
+      appliedDeckIds = Array.isArray(parsed.deckIds)
+        ? parsed.deckIds.map((e) => String(e))
+        : [];
+      useStudyRoomStore.getState().replaceSelectedDocIds(
+        Array.isArray(parsed.selectedDocIds)
+          ? parsed.selectedDocIds.map((e) => String(e))
+          : [],
+      );
     },
     isEmpty: () => false,
   },
   chats: {
-    omitKey: true,
+    key: "chats",
     collection: CHATS_COLLECTION_ID,
     read: () => ({
-      messages: JSON.stringify(useStudyRoomStore.getState().chat.slice(-MAX_CHAT_MESSAGES)),
+      messages: JSON.stringify(
+        useStudyRoomStore.getState().chat.slice(-MAX_CHAT_MESSAGES).map((m) => ({ role: m.role, content: m.content, sources: m.sources })),
+      ),
     }),
-    apply: (doc) =>
-      useStudyRoomStore.setState({ chat: JSON.parse((doc.messages as string) ?? "[]") }),
+    apply: (doc) => {
+      let list: Array<Record<string, unknown>> = [];
+      try {
+        list = JSON.parse((doc.messages as string) ?? "[]");
+      } catch {
+        return;
+      }
+      useStudyRoomStore.getState().replaceChat(
+        list.map((m) => ({
+          role: String(m.role ?? "assistant"),
+          content: String(m.content ?? ""),
+          sources: Array.isArray(m.sources) ? m.sources.map((e) => String(e)) : undefined,
+        })),
+      );
+    },
     isEmpty: () => useStudyRoomStore.getState().chat.length === 0,
-  } as KeyOps & { collection?: string },
+  },
 };
 
+const BLOB_KEYS_LIST = Object.keys(BLOB_KEYS);
+
 function collectionFor(key: string) {
-  const col = (KEYS[key] as KeyOps & { collection?: string }).collection;
-  return col ?? SNAPSHOTS_COLLECTION_ID;
+  return BLOB_KEYS[key]?.collection ?? SNAPSHOTS_COLLECTION_ID;
 }
 
 let applyingRemote = false;
 let subscribed = false;
 let appliedDeckIds: string[] | null = null;
-const pushTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+const blobPushTimers: Record<string, ReturnType<typeof setTimeout>> = {};
 
-/* ---------------- realtime (cross-device pulls) ---------------- */
-
-let realtimeUnsub: (() => void) | null = null;
-/** our own document writes, by Appwrite document id → the updatedAt we wrote;
- *  realtime events with the same stamp are our own echoes, not remote changes */
-const lastPushedAt = new Map<string, number>();
-
-function startRealtime(user: AuthUser) {
-  stopRealtime();
-  if (!appwriteClient) return;
-  const channels = [
-    `databases.${DATABASE_ID}.collections.${SNAPSHOTS_COLLECTION_ID}.documents`,
-    `databases.${DATABASE_ID}.collections.${CHATS_COLLECTION_ID}.documents`,
-    `databases.${DATABASE_ID}.collections.${DECKS_COLLECTION_ID}.documents`,
-  ];
-  realtimeUnsub = appwriteClient.subscribe(channels, (response: {
-    events: string[];
-    payload: Record<string, unknown>;
-  }) => {
-    try {
-      handleRealtimeEvent(response, user);
-    } catch {
-      // a malformed event must never break the tab
-    }
-  });
-}
-
-function stopRealtime() {
-  realtimeUnsub?.();
-  realtimeUnsub = null;
-}
-
-function handleRealtimeEvent(
-  response: { events: string[]; payload: Record<string, unknown> },
-  user: AuthUser,
-) {
-  const { user: currentUser, status } = useAuthStore.getState();
-  if (status !== "signed-in" || currentUser?.id !== user.id) return;
-  const doc = response.payload;
-  if (doc.userId !== user.id) return; // another user's doc
-
-  // deletions only matter for decks (snapshots are upserted, never deleted)
-  if (response.events.some((e) => e.endsWith(".delete"))) {
-    if (typeof doc.deckId === "string") {
-      applyingRemote = true;
-      useStudyRoomStore.getState().removeDeckSilently(doc.deckId);
-      applyingRemote = false;
-    }
-    return;
-  }
-
-  // ignore echoes of our own writes
-  const docId = doc.$id as string | undefined;
-  const updatedAt = typeof doc.updatedAt === "number" ? doc.updatedAt : 0;
-  if (docId !== undefined && lastPushedAt.get(docId) === updatedAt) return;
-
-  applyingRemote = true;
-  try {
-    const key = doc.key as string | undefined;
-    if (key !== undefined && KEYS[key] !== undefined) {
-      KEYS[key].apply(doc);
-    } else if (typeof doc.deckId === "string") {
-      const deckId = doc.deckId;
-      const remoteDeck = {
-        id: deckId,
-        title: (doc.title as string) ?? "Deck",
-        documentIds: JSON.parse((doc.documentIds as string) ?? "[]"),
-        createdAt: (doc.createdAt as number) ?? 0,
-        updatedAt: (doc.updatedAt as number) ?? 0,
-        cards: JSON.parse((doc.cards as string) ?? "[]"),
-      } satisfies Deck;
-      useStudyRoomStore.setState((s) => ({
-        decks: [...s.decks.filter((x) => x.id !== deckId), remoteDeck],
-      }));
-    } else if (typeof doc.messages === "string") {
-      KEYS.chats.apply(doc);
-    }
-  } finally {
-    applyingRemote = false;
-  }
-}
-
-async function upsertDocument(collection: string, docId: string, payload: Record<string, unknown>, userId: string) {
-  const permissions = [`read("user:${userId}")`, `write("user:${userId}")`];
-  try {
-    await databases!.updateDocument(DATABASE_ID, collection, docId, payload);
-  } catch {
-    await databases!.createDocument(DATABASE_ID, collection, docId, payload, permissions);
-  }
-}
-
-/**
- * Store keys where an empty local list must never overwrite non-empty cloud
- * data — protects against wiping the cloud from a device that never loaded it
- * (fresh install, offline reconcile, cleared storage). studyroom/chats are
- * exempt: clearing the chat or the selection is a legitimate empty sync.
- */
-const GUARDED_KEYS = new Set(["subjects", "todos", "homework", "grades", "events", "timetable"]);
-
-/** true when the local payload holds only empty lists while the cloud
- *  document still has items — pushing it would destroy cloud data */
-async function wouldWipeRemote(userId: string, key: string, attributes: Record<string, unknown>) {
-  try {
-    const local = JSON.parse((attributes.data as string) ?? "{}");
-    if (typeof local !== "object" || !Object.values(local).every((v) => Array.isArray(v) && v.length === 0))
-      return false;
-    const docId = await snapshotDocId(userId, collectionFor(key), key);
-    const remote = (await databases!.getDocument(
-      DATABASE_ID,
-      collectionFor(key),
-      docId,
-    )) as unknown as Record<string, unknown>;
-    const remoteData = JSON.parse((remote.data as string) ?? "{}");
-    return Object.values(remoteData).some((v) => Array.isArray(v) && v.length > 0);
-  } catch {
-    return false; // remote unreadable (or absent) → don't block the push
-  }
-}
-
-async function pushSnapshot(userId: string, key: string) {
-  const ops = KEYS[key];
-  const { setSyncing, setSynced, setSyncError } = useAuthStore.getState();
-  setSyncing(true);
-  try {
-    const docId = await snapshotDocId(userId, collectionFor(key), key);
-    // new Appwrite API: `data` is the attributes object (was: a JSON string
-    // per attribute — the old flat shape now fails with "Unknown attribute")
-    const updatedAt = Date.now();
-    const attributes: Record<string, unknown> = { userId, ...ops.read(), updatedAt };
-    if (!ops.omitKey) attributes.key = key;
-    const payload = { data: attributes };
-
-    // baseline rule: a device that has never observed this store's cloud state
-    // (fresh install, reconcile failed offline) must not push — it could wipe
-    // data it has never seen. Dirty stays; the next reconcile sets the baseline
-    // and this change is re-evaluated against the loaded cloud state.
-    if (GUARDED_KEYS.has(key) && !useSyncMetaStore.getState().isLoaded(key)) {
-      setSyncing(false);
-      return;
-    }
-
-    if (GUARDED_KEYS.has(key) && (await wouldWipeRemote(userId, key, attributes))) {
-      // keep the cloud copy; clear the dirty flag so we don't retry forever —
-      // the next reconcile will pull the cloud state back onto this device
-      useSyncMetaStore.getState().clearDirty(key);
-      setSyncing(false);
-      return;
-    }
-
-    await upsertDocument(collectionFor(key), docId, payload, userId);
-    lastPushedAt.set(docId, updatedAt); // own echo — ignore in realtime
-    useSyncMetaStore.getState().clearDirty(key);
-    setSynced(Date.now());
-  } catch (e) {
-    // offline: the change stays dirty in localStorage and uploads on the next sync
-    if (!navigator.onLine) {
-      useAuthStore.getState().setSyncing(false);
-      return;
-    }
-    setSyncError((e as Error).message);
-  }
-}
-
-function schedulePush(key: string) {
-  const { user, status } = useAuthStore.getState();
-  if (status !== "signed-in" || !user || applyingRemote) return;
-  useSyncMetaStore.getState().markDirty(key, Date.now());
-  clearTimeout(pushTimers[key]);
-  pushTimers[key] = setTimeout(() => void pushSnapshot(user.id, key), PUSH_DEBOUNCE_MS);
-}
-
-/* ---------------- decks (one document per deck, fetched by id) ---------------- */
+/* ---------------- decks (one document per deck, as before) ---------------- */
 
 function docToDeck(doc: Record<string, unknown>): Deck {
+  let documentIds: string[] = [];
+  let cards: Deck["cards"] = [];
+  try {
+    documentIds = JSON.parse((doc.documentIds as string) ?? "[]");
+  } catch {}
+  try {
+    cards = JSON.parse((doc.cards as string) ?? "[]");
+  } catch {}
   return {
-    id: doc.deckId as string,
+    id: String(doc.deckId ?? ""),
     title: (doc.title as string) ?? "Deck",
-    documentIds: JSON.parse((doc.documentIds as string) ?? "[]"),
+    documentIds,
     createdAt: (doc.createdAt as number) ?? 0,
     updatedAt: (doc.updatedAt as number) ?? 0,
-    cards: JSON.parse((doc.cards as string) ?? "[]"),
+    cards,
   };
-}
-
-async function getDeckDoc(user: AuthUser, deckId: string): Promise<Deck | null> {
-  try {
-    const docId = await snapshotDocId(user.id, DECKS_COLLECTION_ID, deckId);
-    const doc = (await databases!.getDocument(
-      DATABASE_ID,
-      DECKS_COLLECTION_ID,
-      docId,
-    )) as unknown as Record<string, unknown>;
-    return docToDeck(doc);
-  } catch {
-    return null;
-  }
 }
 
 async function pushDeck(user: AuthUser, deck: Deck) {
   const docId = await snapshotDocId(user.id, DECKS_COLLECTION_ID, deck.id);
-  const updatedAt = Date.now();
-  await upsertDocument(
-    DECKS_COLLECTION_ID,
-    docId,
-    {
-      data: {
-        userId: user.id,
-        deckId: deck.id,
-        title: deck.title,
-        documentIds: JSON.stringify(deck.documentIds),
-        cards: JSON.stringify(deck.cards),
-        createdAt: deck.createdAt,
-        updatedAt,
-      },
+  const headers = { "content-type": "application/json", ...(await getAuthHeaders()) };
+  const body = {
+    data: {
+      userId: user.id,
+      deckId: deck.id,
+      title: deck.title,
+      documentIds: JSON.stringify(deck.documentIds),
+      cards: JSON.stringify(deck.cards),
+      createdAt: deck.createdAt,
+      updatedAt: Date.now(),
     },
-    user.id,
+  };
+  let res = await fetch(
+    `${REST_BASE}/databases/${DATABASE_ID}/collections/${DECKS_COLLECTION_ID}/documents/${docId}`,
+    { method: "PATCH", headers, body: JSON.stringify(body) },
   );
-  lastPushedAt.set(docId, updatedAt); // own echo — ignore in realtime
+  if (res.status === 404) {
+    res = await fetch(
+      `${REST_BASE}/databases/${DATABASE_ID}/collections/${DECKS_COLLECTION_ID}/documents`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          documentId: docId,
+          permissions: [`read("user:${user.id}")`, `write("user:${user.id}")`],
+          data: body.data,
+        }),
+      },
+    );
+  }
+  if (!res.ok) throw new Error(`deck upsert → ${res.status}`);
+  lastDeckPush.set(docId, deck.updatedAt);
 }
+
+const lastDeckPush = new Map<string, number>();
 
 async function syncDecks(user: AuthUser) {
-  const { setSyncing, setSynced, setSyncError } = useAuthStore.getState();
-  setSyncing(true);
-  try {
-    const room = useStudyRoomStore.getState();
-    const local = room.decks;
-
-    // 1. deletions recorded while offline/pending → apply them in the cloud
-    const deletedIds = [...room.deletedDeckIds];
-    for (const id of deletedIds) {
+  const room = useStudyRoomStore.getState();
+  for (const deck of room.decks) {
+    await pushDeck(user, deck);
+  }
+  // restore decks listed in the studyroom snapshot but missing locally
+  for (const id of appliedDeckIds ?? []) {
+    if (room.decks.some((d) => d.id === id)) continue;
+    try {
       const docId = await snapshotDocId(user.id, DECKS_COLLECTION_ID, id);
-      try {
-        await databases!.deleteDocument(DATABASE_ID, DECKS_COLLECTION_ID, docId);
-      } catch {
-        /* already gone */
+      const headers = { "content-type": "application/json", ...(await getAuthHeaders()) };
+      const res = await fetch(
+        `${REST_BASE}/databases/${DATABASE_ID}/collections/${DECKS_COLLECTION_ID}/documents/${docId}`,
+        { headers },
+      );
+      if (res.ok) {
+        const doc = (await res.json()) as Record<string, unknown>;
+        const deck = docToDeck({ ...doc, deckId: id });
+        if (deck.id) useStudyRoomStore.getState().upsertDeck(deck);
       }
+    } catch {
+      // a missing deck stays missing
     }
-    if (deletedIds.length > 0) {
-      useStudyRoomStore.setState((s) => ({
-        deletedDeckIds: s.deletedDeckIds.filter((id) => !deletedIds.includes(id)),
-      }));
-    }
-
-    // 2. push every local deck (few, small — upsert)
-    for (const deck of local) await pushDeck(user, deck);
-
-    // 3. restore decks that the snapshot lists but this device doesn't have
-    //    (fresh device / cleared storage). Decks deleted on another device are
-    //    already gone from the cloud, so nothing is resurrected.
-    for (const id of appliedDeckIds ?? []) {
-      if (local.some((d) => d.id === id) || deletedIds.includes(id)) continue;
-      const remoteDeck = await getDeckDoc(user, id);
-      if (remoteDeck) {
-        useStudyRoomStore.setState((s) => ({
-          decks: [...s.decks.filter((x) => x.id !== id), remoteDeck],
-        }));
-      }
-    }
-    setSynced(Date.now());
-  } catch (e) {
-    if (!navigator.onLine) {
-      setSyncing(false);
-      return; // queued — pushes retry when the connection is back
-    }
-    setSyncError((e as Error).message);
   }
 }
 
-function scheduleDecks() {
-  const { user, status } = useAuthStore.getState();
-  if (status !== "signed-in" || !user || applyingRemote) return;
-  clearTimeout(pushTimers["decks"]);
-  pushTimers["decks"] = setTimeout(() => void syncDecks(user), PUSH_DEBOUNCE_MS);
-}
+/* ================================================================== */
+/* BLOB RECONCILE (observe + retry machinery)                          */
+/* ================================================================== */
 
-/* ---------------- init / auth actions ---------------- */
-
-function subscribeStores() {
-  if (subscribed) return;
-  subscribed = true;
-  for (const key of [
-    "subjects",
-    "todos",
-    "homework",
-    "grades",
-    "events",
-    "timetable",
-    "studyroom",
-    "chats",
-  ]) {
-    const store =
-      key === "subjects"
-        ? useSubjectsStore
-        : key === "todos"
-          ? useTodosStore
-          : key === "homework"
-            ? useHomeworkStore
-            : key === "grades"
-              ? useGradesStore
-              : key === "events"
-                ? useEventsStore
-                : key === "timetable"
-                  ? useTimetableStore
-                  : useStudyRoomStore;
-    store.subscribe(() => schedulePush(key));
-  }
-  // decks live in the study-room store too, but sync as their own documents
-  useStudyRoomStore.subscribe(() => scheduleDecks());
-}
-
-/** observes one key's cloud state and reconciles it — returns true when the
- *  cloud was actually observed (false = network failure, retry worthwhile) */
-async function observeAndReconcileKey(user: AuthUser, key: string): Promise<boolean> {
-  const ops = KEYS[key];
+async function observeBlobKey(user: AuthUser, key: string): Promise<boolean> {
+  const ops = BLOB_KEYS[key];
   let remote: Record<string, unknown> | null = null;
   let observedCloud = false; // 404 (empty cloud) counts as observed
   try {
     const docId = await snapshotDocId(user.id, collectionFor(key), key);
-    remote = (await databases!.getDocument(
-      DATABASE_ID,
-      collectionFor(key),
-      docId,
-    )) as unknown as Record<string, unknown>;
-    observedCloud = true;
-  } catch (e) {
-    remote = null;
-    observedCloud = (e as { code?: number }).code === 404;
+    const headers = { "content-type": "application/json", ...(await getAuthHeaders()) };
+    const res = await fetch(
+      `${REST_BASE}/databases/${DATABASE_ID}/collections/${collectionFor(key)}/documents/${docId}`,
+      { headers },
+    );
+    if (res.status === 404) {
+      observedCloud = true;
+    } else if (res.ok) {
+      remote = (await res.json()) as Record<string, unknown>;
+      observedCloud = true;
+    } else {
+      observedCloud = false;
+    }
+  } catch {
+    observedCloud = false; // offline etc. — cloud state unknown
   }
   if (observedCloud) useSyncMetaStore.getState().markLoaded(key);
 
   // …unless this device holds local edits that never made it up
   const dirtyAt = useSyncMetaStore.getState().dirtyAt[key];
-  const hasUnsyncedEdits = dirtyAt !== undefined && (!remote || dirtyAt > (remote.updatedAt as number));
+  const remoteUpdatedAt = (remote?.updatedAt as number) ?? 0;
+  const hasUnsyncedEdits =
+    dirtyAt !== undefined && (remote === null || dirtyAt > remoteUpdatedAt);
 
   if (remote && !hasUnsyncedEdits) {
     ops.apply(remote);
@@ -500,12 +590,102 @@ async function observeAndReconcileKey(user: AuthUser, key: string): Promise<bool
   }
   if (!remote && ops.isEmpty()) return true;
   // write afterwards: unsynced edits, or fresh local data with no snapshot yet
-  await pushSnapshot(user.id, key);
+  await pushBlobSnapshot(user, key);
   return true;
 }
 
-/** serializes reconciles — page load, visibility-return and "Sync now" must
- *  never race each other (concurrent runs fight over `applyingRemote`) */
+async function pushBlobSnapshot(user: AuthUser, key: string) {
+  const ops = BLOB_KEYS[key];
+  const { setSyncing } = useAuthStore.getState();
+  setSyncing(true);
+  try {
+    const docId = await snapshotDocId(user.id, collectionFor(key), key);
+    const updatedAt = Date.now();
+    const attributes: Record<string, unknown> = {
+      userId: user.id,
+      ...ops.read(),
+      updatedAt,
+    };
+    if (key !== "chats") attributes.key = key;
+
+    // baseline rule: a device that has never observed this store's cloud state
+    // must not push (it could wipe data it has never seen)
+    if (key !== "chats" && !useSyncMetaStore.getState().isLoaded(key)) {
+      setSyncing(false);
+      return;
+    }
+    // second layer: never overwrite a non-empty blob with an empty one
+    if (key !== "chats") {
+      const headers = { "content-type": "application/json", ...(await getAuthHeaders()) };
+      const res = await fetch(
+        `${REST_BASE}/databases/${DATABASE_ID}/collections/${collectionFor(key)}/documents/${docId}`,
+        { headers },
+      );
+      if (res.ok) {
+        const remoteDoc = (await res.json()) as Record<string, unknown>;
+        const remoteRaw = (remoteDoc.data as string) ?? "{}";
+        let remoteParsed: Record<string, unknown> = {};
+        try {
+          remoteParsed = JSON.parse(remoteRaw);
+        } catch {}
+        const localParsed: Record<string, unknown> = JSON.parse(
+          (attributes.data as string) ?? "{}",
+        );
+        const localEmpty = Object.values(localParsed).every(
+          (v) => Array.isArray(v) && v.length === 0,
+        );
+        const remoteNonEmpty = Object.values(remoteParsed).some(
+          (v) => Array.isArray(v) && v.length > 0,
+        );
+        if (localEmpty && remoteNonEmpty) {
+          // keep the cloud copy; the next reconcile pulls it back
+          useSyncMetaStore.getState().clearDirty(key);
+          setSyncing(false);
+          return;
+        }
+      }
+    }
+
+    const headers = { "content-type": "application/json", ...(await getAuthHeaders()) };
+    const res = await fetch(
+      `${REST_BASE}/databases/${DATABASE_ID}/collections/${collectionFor(key)}/documents/${docId}`,
+      { method: "PATCH", headers, body: JSON.stringify({ data: attributes }) },
+    );
+    if (res.status === 404) {
+      await fetch(
+        `${REST_BASE}/databases/${DATABASE_ID}/collections/${collectionFor(key)}/documents`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            documentId: docId,
+            permissions: [`read("user:${user.id}")`, `write("user:${user.id}")`],
+            data: attributes,
+          }),
+        },
+      );
+    }
+    useSyncMetaStore.getState().clearDirty(key);
+    useAuthStore.getState().setSynced(Date.now());
+  } catch (e) {
+    setSyncing(false);
+    useAuthStore.getState().setSyncError((e as Error).message);
+  }
+}
+
+function scheduleBlobPush(key: string) {
+  const { user, status } = useAuthStore.getState();
+  if (status !== "signed-in" || !user || applyingRemote) return;
+  useSyncMetaStore.getState().markDirty(key, Date.now());
+  clearTimeout(blobPushTimers[key]);
+  blobPushTimers[key] = setTimeout(() => void pushBlobSnapshot(user, key), PUSH_DEBOUNCE_MS);
+}
+
+/* ================================================================== */
+/* FULL SYNC (blobs + rows) with retry + serialization                 */
+/* ================================================================== */
+
+
 let reconcileInFlight: Promise<void> = Promise.resolve();
 function reconcile(user: AuthUser): Promise<void> {
   reconcileInFlight = reconcileInFlight
@@ -518,53 +698,237 @@ function reconcile(user: AuthUser): Promise<void> {
 
 async function runReconcile(user: AuthUser) {
   applyingRemote = true;
-  const { setSynced, setSyncError } = useAuthStore.getState();
+  const auth = useAuthStore.getState();
   try {
-    // flaky networks kill individual requests — retry every key that wasn't
-    // observed until all stores are covered or the attempts run out
-    let remaining = Object.keys(KEYS);
+    // blobs: observe each with retries
+    let remaining = BLOB_KEYS_LIST;
     for (let attempt = 0; attempt < 3 && remaining.length > 0; attempt++) {
       if (attempt > 0) await new Promise((r) => setTimeout(r, 1500));
       const failed: string[] = [];
       for (const key of remaining) {
-        if (!(await observeAndReconcileKey(user, key))) failed.push(key);
+        if (!(await observeBlobKey(user, key))) failed.push(key);
       }
       remaining = failed;
     }
-
     if (remaining.length > 0) {
-      setSyncError(
+      auth.setSyncError(
         `sync incomplete — ${remaining.join(", ")} could not be loaded; check your connection and tap Sync now`,
       );
+      scheduleRetryLoop();
       return;
     }
 
-    // decks reconcile: fresh device loads everything, otherwise merge per deck
-    await syncDecks(user);
+    // rows: push + pull each store
+    const failedRows: string[] = [];
+    for (const key of ROW_STORE_KEYS) {
+      try {
+        await syncRows(key, user);
+        await pullRows(key, user);
+      } catch (e) {
+        failedRows.push(key);
+        console.warn(`[sync] row store ${key} failed:`, e);
+      }
+    }
+    if (failedRows.length > 0) {
+      auth.setSyncError(`sync incomplete — row stores failed: ${failedRows.join(", ")}`);
+      scheduleRetryLoop();
+      return;
+    }
 
-    setSynced(Date.now());
+    await syncDecks(user);
+    auth.setSynced(Date.now());
   } catch (e) {
-    setSyncError((e as Error).message);
+    auth.setSyncError((e as Error).message);
   } finally {
     applyingRemote = false;
   }
 }
 
+let retryTimer: ReturnType<typeof setInterval> | undefined = undefined;
+
+/** while the sync is incomplete, keep retrying every 30 s — flaky-DNS windows
+ *  come and go, and the app should heal on its own without user action */
+function scheduleRetryLoop() {
+  if (retryTimer) return; // already looping
+  retryTimer = setInterval(() => {
+    const { status, syncError, user } = useAuthStore.getState();
+    if (status !== "signed-in" || !syncError || !user) {
+      clearInterval(retryTimer);
+      retryTimer = undefined;
+      return;
+    }
+    void reconcile(user);
+  }, 30_000);
+}
+
+/** "Sync now" — full round-trip */
+export async function syncNow() {
+  const { user, status } = useAuthStore.getState();
+  if (status !== "signed-in" || !user) return;
+  await reconcile(user);
+}
+
+/** called on resume / visibility-return */
+export async function resync() {
+  const { user, status } = useAuthStore.getState();
+  if (status !== "signed-in" || !user) return;
+  await reconcile(user);
+}
+
+/* ================================================================== */
+/* REALTIME                                                            */
+/* ================================================================== */
+
+let realtimeUnsub: Array<() => void> = [];
+
+function startRealtime(user: AuthUser) {
+  stopRealtime();
+  if (!appwriteClient) return;
+  const channels = [
+    `databases.${DATABASE_ID}.collections.${SNAPSHOTS_COLLECTION_ID}.documents`,
+    `databases.${DATABASE_ID}.collections.${CHATS_COLLECTION_ID}.documents`,
+    `databases.${DATABASE_ID}.collections.${DECKS_COLLECTION_ID}.documents`,
+    ...ROW_STORE_KEYS.map(
+      (key) => `databases.${DATABASE_ID}.tables.${BLOB_KEYS ? ROW_TABLES[key] : ""}.rows`,
+    ),
+  ];
+  const unsubs = [appwriteClient.subscribe(channels, (response) => {
+    try {
+      handleRealtimeEvent(
+        response as { events: string[]; payload: Record<string, unknown> },
+        user,
+      );
+    } catch {
+      // a malformed event must never break the tab
+    }
+  })];
+  realtimeUnsub = unsubs;
+}
+
+const ROW_TABLES: Record<string, string> = {
+  subjects: "subjects",
+  todos: "todos",
+  homework: "homeworks",
+  grades: "grades",
+  events: "events",
+};
+
+function stopRealtime() {
+  for (const unsub of realtimeUnsub) unsub();
+  realtimeUnsub = [];
+}
+
+function handleRealtimeEvent(
+  response: { events: string[]; payload: Record<string, unknown> },
+  user: AuthUser,
+) {
+  const { user: currentUser, status } = useAuthStore.getState();
+  if (status !== "signed-in" || currentUser?.id !== user.id) return;
+  const event = response.events[0] ?? "";
+  const payload = response.payload;
+
+  // row events: databases.{db}.tables.{table}/rows/...
+  if (event.includes("/tables/")) {
+    for (const [storeKey, table] of Object.entries(ROW_TABLES)) {
+      if (event.includes(`/tables/${table}/rows`)) {
+        void mergeRowEvent(storeKey, { ...payload, $id: String(payload.$id ?? "") });
+        return;
+      }
+    }
+    return;
+  }
+
+  // deck events
+  if (event.includes(`/collections/${DECKS_COLLECTION_ID}/documents`)) {
+    if (payload.deleted === true || event.endsWith(".delete")) {
+      const deckId = payload.deckId;
+      if (typeof deckId === "string") useStudyRoomStore.getState().removeDeckSilently(deckId);
+      return;
+    }
+    const deck = docToDeck(payload);
+    if (deck.id) useStudyRoomStore.getState().upsertDeck(deck);
+    return;
+  }
+
+  // blob document events (timetable / studyroom / chats)
+  const key = payload.key;
+  if (typeof key === "string" && BLOB_KEYS[key]) {
+    if (event.endsWith(".delete")) return;
+    applyingRemote = true;
+    try {
+      BLOB_KEYS[key].apply(payload);
+    } finally {
+      applyingRemote = false;
+    }
+  }
+}
+
+/* ================================================================== */
+/* SUBSCRIPTIONS + INIT/AUTH                                           */
+/* ================================================================== */
+
+function subscribeStores() {
+  if (subscribed) return;
+  subscribed = true;
+
+  // blobs
+  useTimetableStore.subscribe(() => scheduleBlobPush("timetable"));
+  useStudyRoomStore.subscribe(() => scheduleBlobPush("studyroom"));
+  useStudyRoomStore.subscribe(() => {
+    const { user, status } = useAuthStore.getState();
+    if (status !== "signed-in" || !user || applyingRemote) return;
+    void syncDecks(user);
+  });
+
+  // rows
+  useSubjectsStore.subscribe(() => scheduleRowSync("subjects"));
+  useTodosStore.subscribe(() => scheduleRowSync("todos"));
+  useHomeworkStore.subscribe(() => scheduleRowSync("homework"));
+  useGradesStore.subscribe(() => scheduleRowSync("grades"));
+  useEventsStore.subscribe(() => scheduleRowSync("events"));
+}
+
+/* ---------------- session persistence ----------------
+ * The Dart/JS SDKs keep sessions alive in the browser, but the mobile cookie
+ * jar is memory-only — so the secret is persisted device-local at sign-in and
+ * restored on startup (same trust level as the browser cookie). */
+
+const SESSION_KEY = "semester.appwritesession";
+
+async function persistSession(secret: string) {
+  try {
+    localStorage.setItem(SESSION_KEY, secret);
+  } catch {}
+}
+
+async function loadSessionSecret(): Promise<string | null> {
+  try {
+    return localStorage.getItem(SESSION_KEY);
+  } catch {
+    return null;
+  }
+}
+
+async function clearSession() {
+  try {
+    localStorage.removeItem(SESSION_KEY);
+  } catch {}
+}
+
 /** restores the Appwrite session (if any) and reconciles — run once on mount */
 export async function initSync() {
   const { setAuth, setOnline } = useAuthStore.getState();
-  if (!appwriteConfigured || !account || !databases) {
+  if (!appwriteConfigured || !account || !appwriteClient) {
     setAuth(null, "unconfigured");
     return;
   }
   setAuth(null, "loading");
 
-  // offline flag + auto-resync when the connection comes back
   const updateOnline = () => setOnline(navigator.onLine);
   updateOnline();
   window.addEventListener("online", () => {
     updateOnline();
-    void syncNow();
+    void resync();
   });
   window.addEventListener("offline", updateOnline);
 
@@ -577,15 +941,19 @@ export async function initSync() {
     }
     const { user, status } = useAuthStore.getState();
     if (status === "signed-in" && user && hiddenAt && Date.now() - hiddenAt > 30_000) {
-      void reconcile(user);
+      void resync();
     }
   });
+
+  const savedSecret = await loadSessionSecret();
+  if (savedSecret) appwriteClient.setSession(savedSecret);
 
   const user = await getCurrentUser();
   if (!user) {
     setAuth(null, "signed-out");
     return;
   }
+  if (savedSecret) appwriteClient.setSession(savedSecret);
   setAuth(user, "signed-in");
   subscribeStores();
   startRealtime(user);
@@ -595,14 +963,17 @@ export async function initSync() {
 export async function signIn(email: string, password: string) {
   if (!account) throw new Error("Auth is not configured");
   const session = await account.createEmailPasswordSession(email, password);
-  // belt & suspenders: keeps the session alive even where cookies are
-  // unreliable (embedded browsers); real Appwrite sessions carry a secret
-  if (session.secret && appwriteClient) appwriteClient.setSession(session.secret);
+  if (session.secret && appwriteClient) {
+    appwriteClient.setSession(session.secret);
+    await persistSession(session.secret);
+  }
   const user = await getCurrentUser();
   useAuthStore.getState().setAuth(user, "signed-in");
   subscribeStores();
-  if (user) startRealtime(user);
-  if (user) await reconcile(user);
+  if (user) {
+    startRealtime(user);
+    await reconcile(user);
+  }
 }
 
 export async function signUp(name: string, email: string, password: string) {
@@ -615,7 +986,7 @@ export async function signUp(name: string, email: string, password: string) {
 export async function signOut() {
   if (account) await account.deleteSession("current").catch(() => {});
   stopRealtime();
-  lastPushedAt.clear();
+  await clearSession();
   useAuthStore.getState().setAuth(null, "signed-out");
 }
 
@@ -626,29 +997,36 @@ export async function signOut() {
  */
 export async function mirrorPortal(plan: PortalPlanJson) {
   const { user, status } = useAuthStore.getState();
-  if (status !== "signed-in" || !user || !databases) return;
+  if (status !== "signed-in" || !user || !appwriteClient) return;
   try {
     const docId = await snapshotDocId(user.id, SNAPSHOTS_COLLECTION_ID, "portal");
-    await upsertDocument(
-      SNAPSHOTS_COLLECTION_ID,
-      docId,
-      {
-        userId: user.id,
-        key: "portal",
-        data: JSON.stringify({ days: plan.days, courses: plan.courses }),
-        updatedAt: Date.now(),
-      },
-      user.id,
+    const headers = { "content-type": "application/json", ...(await getAuthHeaders()) };
+    const attributes = {
+      userId: user.id,
+      key: "portal",
+      data: JSON.stringify({ days: plan.days, courses: plan.courses }),
+      updatedAt: Date.now(),
+    };
+    let res = await fetch(
+      `${REST_BASE}/databases/${DATABASE_ID}/collections/${SNAPSHOTS_COLLECTION_ID}/documents/${docId}`,
+      { method: "PATCH", headers, body: JSON.stringify({ data: attributes }) },
     );
+    if (res.status === 404) {
+      res = await fetch(
+        `${REST_BASE}/databases/${DATABASE_ID}/collections/${SNAPSHOTS_COLLECTION_ID}/documents`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            documentId: docId,
+            permissions: [`read("user:${user.id}")`, `write("user:${user.id}")`],
+            data: attributes,
+          }),
+        },
+      );
+    }
   } catch {
     // mirroring is best-effort — the digest just falls back to plain classes
   }
 }
 
-/** manual "Sync now" — full round-trip: pull the cloud state (reconcile) and
- *  push whatever is still unsynced locally */
-export async function syncNow() {
-  const { user, status } = useAuthStore.getState();
-  if (status !== "signed-in" || !user) return;
-  await reconcile(user);
-}

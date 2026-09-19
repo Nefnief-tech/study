@@ -75,4 +75,25 @@ class SubjectsStore extends PersistedStore {
     notifyListeners();
     persist();
   }
+
+  /// row-level sync merge: insert or replace a single subject
+  void upsertOne(Subject subject) {
+    final next = [..._subjects];
+    final i = next.indexWhere((s) => s.id == subject.id);
+    if (i >= 0) {
+      next[i] = subject;
+    } else {
+      next.add(subject);
+    }
+    _subjects = next;
+    notifyListeners();
+    persist();
+  }
+
+  /// row-level sync merge: drop a single subject
+  void removeOne(String id) {
+    _subjects = _subjects.where((s) => s.id != id).toList();
+    notifyListeners();
+    persist();
+  }
 }

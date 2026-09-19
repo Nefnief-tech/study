@@ -14,14 +14,17 @@ import { createHash } from "node:crypto";
  *      tomorrow.
  *   3. "This week"         — exams, deadlines & events within the next 7 days.
  *
+ * Subjects / todos / homework / events are read as STRUCTURED ROWS from the
+ * `semester` tables (one row per entity, rowId = entity UUID, `deleted`
+ * tombstones); timetable + portal remain snapshot blobs.
+ *
  * Empty digests are skipped; each message id is deterministic per day, so
  * re-runs on the same day never double-send.
  *
- * Required function scopes (set in appwrite.json → functions[].scopes):
- *   documents.read  — read the snapshot documents
- *   messaging       — create push messages
- * The scoped API key is injected as APPWRITE_API_KEY (CLI "scopes" support),
- * or set it manually as an env var on the function.
+ * Required function scopes (set in appwrite.config.json → functions[].scopes):
+ *   documents.read  — read snapshot documents and table rows
+ *   messages.write  — create push messages
+ * The scoped API key is injected as APPWRITE_API_KEY.
  */
 
 const ENDPOINT = (process.env.APPWRITE_FUNCTION_API_ENDPOINT || process.env.APPWRITE_ENDPOINT || "https://fra.cloud.appwrite.io/v1").replace(/\/+$/, "");
@@ -83,6 +86,38 @@ async function getSnapshot(userId, key) {
   } catch {
     return null;
   }
+}
+
+/** structured rows of one table for a user (new tablesdb API, JSON queries) */
+async function listRows(table, userId) {
+  const params = new URLSearchParams();
+  [
+    { method: "equal", attribute: "userId", values: [userId] },
+    { method: "limit", values: [100] },
+  ].forEach((q, i) => params.append(`queries[${i}]`, JSON.stringify(q)));
+  const res = await aw(
+    `/tablesdb/${DATABASE_ID}/tables/${table}/rows?${params.toString()}`,
+  );
+  return res?.rows ?? [];
+}
+
+/** row → entity shape the digest builders expect (nullish → null) */
+function rowEntity(r) {
+  return {
+    id: r.$id,
+    title: r.title ?? "",
+    notes: r.notes || null,
+    due: r.due || null,
+    priority: r.priority ?? "normal",
+    subjectId: r.subjectId || null,
+    done: r.done === true,
+    createdAt: r.createdAt ?? 0,
+    date: r.date || null,
+    time: r.time || null,
+    type: r.type ?? "event",
+    name: r.name ?? "",
+    color: r.color ?? "",
+  };
 }
 
 /** every user that has a timetable synced */
@@ -205,7 +240,7 @@ function classesTomorrow(timetable, portal) {
 }
 
 function dueSoon(todos, homework, subjects) {
-  const subjectName = (id) => subjects?.subjects?.find((s) => s.id === id)?.name ?? null;
+  const subjectName = (id) => subjects.find((s) => s.id === id)?.name ?? null;
 
   const windows = [];
   const now = new Date();
@@ -239,8 +274,8 @@ function dueSoon(todos, homework, subjects) {
     }
   };
 
-  collect(todos?.todos, "task");
-  collect(homework?.homeworks, "homework");
+  collect(todos, "task");
+  collect(homework, "homework");
   if (windows.length === 0) return null;
   windows.sort((a, b) => a.sort - b.sort);
 
@@ -252,7 +287,7 @@ function dueSoon(todos, homework, subjects) {
 }
 
 function weekAhead(events, subjects) {
-  const list = events?.events ?? [];
+  const list = events;
   if (list.length === 0) return null;
 
   const from = ymd(addDays(1));
@@ -260,7 +295,7 @@ function weekAhead(events, subjects) {
   const wd = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const typeLabel = { exam: "Exam", deadline: "Deadline", study: "Study", event: "Event" };
 
-  const subjectName = (id) => subjects?.subjects?.find((s) => s.id === id)?.name ?? null;
+  const subjectName = (id) => subjects.find((s) => s.id === id)?.name ?? null;
   const rows = [];
   for (const e of list) {
     if (!e.date || e.date < from || e.date > until) continue;
@@ -299,14 +334,21 @@ export default async ({ req, res, log, error }) => {
   const results = [];
   for (const userId of userIds) {
     try {
-      const [timetable, portal, subjects, todos, homework, events] = await Promise.all([
+      const [timetable, portal, subjectRows, todoRows, homeworkRows, eventRows] = await Promise.all([
         getSnapshot(userId, "timetable"),
         getSnapshot(userId, "portal"),
-        getSnapshot(userId, "subjects"),
-        getSnapshot(userId, "todos"),
-        getSnapshot(userId, "homework"),
-        getSnapshot(userId, "events"),
+        listRows("subjects", userId),
+        listRows("todos", userId),
+        listRows("homeworks", userId),
+        listRows("events", userId),
       ]);
+
+      // structured rows → entity arrays (tombstones excluded)
+      const alive = (rows) => rows.filter((r) => r.deleted !== true).map(rowEntity);
+      const subjects = alive(subjectRows);
+      const todos = alive(todoRows);
+      const homework = alive(homeworkRows);
+      const events = alive(eventRows);
 
       const messages = [
         ["classes", classesTomorrow(timetable, portal)],

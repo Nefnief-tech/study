@@ -104,4 +104,25 @@ class TodosStore extends PersistedStore {
     notifyListeners();
     persist();
   }
+
+  /// row-level sync merge: insert or replace a single todo
+  void upsertOne(Todo todo) {
+    final next = [..._todos];
+    final i = next.indexWhere((t) => t.id == todo.id);
+    if (i >= 0) {
+      next[i] = todo;
+    } else {
+      next.insert(0, todo);
+    }
+    _todos = next;
+    notifyListeners();
+    persist();
+  }
+
+  /// row-level sync merge: drop a single todo
+  void removeOne(String id) {
+    _todos = _todos.where((t) => t.id != id).toList();
+    notifyListeners();
+    persist();
+  }
 }

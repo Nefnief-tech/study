@@ -13,6 +13,9 @@ interface SubjectsState {
   updateSubject: (id: string, patch: Partial<Omit<Subject, "id">>) => void;
   /** removes the subject and detaches/deletes it everywhere (todos, grades, events) */
   removeSubject: (id: string) => void;
+  /** structured sync: upsert one row pulled from the cloud */
+  upsertOne: (subject: Subject) => void;
+  removeOne: (id: string) => void;
   clearAll: () => void;
 }
 
@@ -33,6 +36,12 @@ export const useSubjectsStore = create<SubjectsState>()(
         set((s) => ({
           subjects: s.subjects.map((x) => (x.id === id ? { ...x, ...patch } : x)),
         })),
+      upsertOne: (subject) =>
+        set((s) => ({
+          subjects: [...s.subjects.filter((x) => x.id !== subject.id), subject],
+        })),
+      removeOne: (id) =>
+        set((s) => ({ subjects: s.subjects.filter((x) => x.id !== id) })),
       removeSubject: (id) => {
         set((s) => ({ subjects: s.subjects.filter((x) => x.id !== id) }));
         useTodosStore.getState().detachSubject(id);

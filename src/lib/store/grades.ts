@@ -36,6 +36,8 @@ interface GradesState {
   addEntry: (input: GradeInput) => void;
   updateEntry: (id: string, patch: Partial<GradeEntry>) => void;
   removeEntry: (id: string) => void;
+  upsertOne: (entry: GradeEntry) => void;
+  removeOne: (id: string) => void;
   /** removes every entry belonging to the subject (cascade on subject delete) */
   removeSubject: (subjectId: string) => void;
   clearAll: () => void;
@@ -54,6 +56,9 @@ export const useGradesStore = create<GradesState>()(
           ),
         })),
       removeEntry: (id) => set((s) => ({ entries: s.entries.filter((e) => e.id !== id) })),
+  upsertOne: (entry) =>
+    set((s) => ({ entries: [...s.entries.filter((e) => e.id !== entry.id), entry] })),
+  removeOne: (id) => set((s) => ({ entries: s.entries.filter((e) => e.id !== id) })),
       removeSubject: (subjectId) =>
         set((s) => ({ entries: s.entries.filter((e) => e.subjectId !== subjectId) })),
       clearAll: () => set({ entries: [] }),

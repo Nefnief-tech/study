@@ -71,7 +71,7 @@ class SyncMetaStore extends PersistedStore {
   String get storageKey => 'semester.syncmeta';
 
   @override
-  int get storageVersion => 3;
+  int get storageVersion => 4;
 
   Map<String, int> _dirtyAt = {};
   Map<String, int> get dirtyAt => Map.unmodifiable(_dirtyAt);
@@ -81,8 +81,18 @@ class SyncMetaStore extends PersistedStore {
   Set<String> _loaded = {};
   bool isLoaded(String key) => _loaded.contains(key);
 
+  /// last-synced content digests for row collections: {store: {rowId: hash}}
+  Map<String, Map<String, String>> _rowDigests = {};
+  Map<String, Map<String, String>> get rowDigests => Map.unmodifiable(_rowDigests);
+
+  void setRowDigests(String store, Map<String, String> digests) {
+    _rowDigests = {..._rowDigests, store: digests};
+    persist();
+  }
+
   @override
-  Map<String, dynamic> persistedState() => {'dirtyAt': _dirtyAt, 'loaded': _loaded.toList()};
+  Map<String, dynamic> persistedState() =>
+      {'dirtyAt': _dirtyAt, 'loaded': _loaded.toList(), 'rowDigests': _rowDigests};
 
   @override
   void hydrateFrom(Map<String, dynamic> state) {
@@ -90,8 +100,14 @@ class SyncMetaStore extends PersistedStore {
     _dirtyAt = raw is Map
         ? raw.map((k, v) => MapEntry('$k', (v as num).toInt()))
         : {};
-    // v2 → v3: an upgrade starts without baselines; the next reconcile sets them
     _loaded = ((state['loaded'] as List?) ?? []).map((e) => e as String).toSet();
+    final rawDigests = state['rowDigests'];
+    _rowDigests = rawDigests is Map
+        ? rawDigests.map((k, v) => MapEntry(
+            '$k',
+            v is Map ? v.map((kk, vv) => MapEntry('$kk', '$vv')) : <String, String>{},
+          ))
+        : {};
   }
 
   void markLoaded(String key) {

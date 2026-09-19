@@ -96,4 +96,25 @@ class EventsStore extends PersistedStore {
     notifyListeners();
     persist();
   }
+
+  /// row-level sync merge: insert or replace a single event
+  void upsertOne(StudyEvent event) {
+    final next = [..._events];
+    final i = next.indexWhere((e) => e.id == event.id);
+    if (i >= 0) {
+      next[i] = event;
+    } else {
+      next.add(event);
+    }
+    _events = next;
+    notifyListeners();
+    persist();
+  }
+
+  /// row-level sync merge: drop a single event
+  void removeOne(String id) {
+    _events = _events.where((e) => e.id != id).toList();
+    notifyListeners();
+    persist();
+  }
 }

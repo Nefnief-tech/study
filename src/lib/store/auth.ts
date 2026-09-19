@@ -43,9 +43,12 @@ interface SyncMetaState {
   dirtyAt: Record<string, number>;
   /** keys whose cloud state this device has observed — pushes require this */
   loaded: string[];
+  /** last-synced content digests for row collections: {store: {rowId: hash}} */
+  rowDigests: Record<string, Record<string, string>>;
   markDirty: (key: string, at: number) => void;
   markLoaded: (key: string) => void;
   isLoaded: (key: string) => boolean;
+  setRowDigests: (store: string, digests: Record<string, string>) => void;
   clearDirty: (key: string) => void;
 }
 
@@ -54,10 +57,13 @@ export const useSyncMetaStore = create<SyncMetaState>()(
     (set, get) => ({
       dirtyAt: {},
       loaded: [],
+      rowDigests: {},
       markDirty: (key, at) => set((s) => ({ dirtyAt: { ...s.dirtyAt, [key]: at } })),
       markLoaded: (key) =>
         set((s) => (s.loaded.includes(key) ? s : { loaded: [...s.loaded, key] })),
       isLoaded: (key) => get().loaded.includes(key),
+      setRowDigests: (store, digests) =>
+        set((s) => ({ rowDigests: { ...s.rowDigests, [store]: digests } })),
       clearDirty: (key) =>
         set((s) => {
           const dirtyAt = { ...s.dirtyAt };
@@ -67,9 +73,9 @@ export const useSyncMetaStore = create<SyncMetaState>()(
     }),
     {
       name: "semester.syncmeta",
-      version: 3,
-      // v2 → v3: an upgrade starts without baselines; the next reconcile sets them
-      migrate: (state) => ({ ...(state as object), loaded: [] }),
+      version: 4,
+      // v3 → v4: row collections start with fresh digests (first cycle uploads)
+      migrate: (state) => ({ ...(state as object), loaded: [], rowDigests: {} }),
     },
   ),
 );

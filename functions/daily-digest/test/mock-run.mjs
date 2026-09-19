@@ -1,5 +1,6 @@
-// Local test harness for functions/daily-digest — stubs fetch, feeds fake
-// snapshots (incl. a cancelled class) and prints the generated pushes.
+// Local test harness for functions/daily-digest — stubs fetch, feeds a fake
+// timetable/portal snapshot plus structured table rows (incl. a cancelled
+// class and a tombstoned row) and prints the generated pushes.
 import { createHash } from "node:crypto";
 import handler from "../src/main.js";
 
@@ -17,8 +18,14 @@ const tKey = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${
 const tDe = `${String(t.getDate()).padStart(2, "0")}.${String(t.getMonth() + 1).padStart(2, "0")}.${t.getFullYear()}`;
 const JS_DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const day = JS_DAY[t.getDay()];
+const inDays = (n) => {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+const yesterday = inDays(-1);
 
-const DATA = {
+const SNAPSHOTS = {
   timetable: { entries: [
     { day, period: 1, time: "08:00 - 08:45", subject: "2mat1", teacher: "MS. CURVE", room: "B102" },
     { day, period: 2, time: "08:50 - 09:35", subject: "2ph1", teacher: "", room: "Lab 1" },
@@ -32,38 +39,48 @@ const DATA = {
     courses: ["2mat1", "2ph1", "2deu1"],
     stand: null,
   },
-  subjects: { subjects: [
-    { id: "s1", name: "Mathematics", color: "#3E6B4F" },
-    { id: "s2", name: "Physics", color: "#38618C" },
-  ]},
-  todos: { todos: [
-    { id: "t1", title: "Linear algebra sheet 4", subjectId: "s1", due: `${tKey}T17:00`, priority: "high", done: false, createdAt: 1 },
-    { id: "t2", title: "old finished thing", done: true, due: `${tKey}T08:00`, priority: "low", createdAt: 2 },
-    { id: "t3", title: "way in the future", due: "2027-01-01T09:00", priority: "low", done: false, createdAt: 3 },
-  ]},
-  homework: { homeworks: [
-    { id: "h1", title: "Worksheet: quadratic equations", subjectId: "s2", due: `${tKey}T08:00`, priority: "medium", done: false, createdAt: 4 },
+};
+
+// structured rows — rowId = entity UUID, `deleted` tombstone, $-server fields
+const row = (id, cols) => ({ $id: id, $createdAt: "2026-09-01T00:00:00.000+00:00", ...cols });
+const TABLES = {
+  subjects: [
+    row("s1", { userId: USER, name: "Mathematics", color: "#3E6B4F", deleted: false }),
+    row("s2", { userId: USER, name: "Physics", color: "#38618C", deleted: false }),
+    row("s3", { userId: USER, name: "Old subject", color: "#666666", deleted: true }), // tombstone
+  ],
+  todos: [
+    row("t1", { userId: USER, title: "Linear algebra sheet 4", subjectId: "s1", due: `${tKey}T17:00`, priority: "high", done: false, createdAt: 1, deleted: false }),
+    row("t2", { userId: USER, title: "old finished thing", subjectId: "", due: `${tKey}T08:00`, priority: "low", done: true, createdAt: 2, deleted: false }),
+    row("t3", { userId: USER, title: "way in the future", subjectId: "", due: "2027-01-01T09:00", priority: "low", done: false, createdAt: 3, deleted: false }),
+  ],
+  homeworks: [
+    row("h1", { userId: USER, title: "Worksheet: quadratic equations", subjectId: "s2", due: `${tKey}T08:00`, priority: "medium", done: false, createdAt: 4, deleted: false }),
     // overdue by one day
-    { id: "h2", title: "Reading log", due: (() => { const d = new Date(); d.setDate(d.getDate() - 1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}T12:00`; })(), priority: "low", done: false, createdAt: 5 },
-  ]},
-  events: { events: [
-    { id: "e1", title: "Physics midterm", date: (() => { const d = new Date(); d.setDate(d.getDate() + 3); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })(), time: "09:45", type: "exam", subjectId: "s2" },
-    { id: "e2", title: "far away", date: "2027-05-01", type: "event" },
-  ]},
+    row("h2", { userId: USER, title: "Reading log", subjectId: "", due: `${yesterday}T12:00`, priority: "low", done: false, createdAt: 5, deleted: false }),
+  ],
+  events: [
+    row("e1", { userId: USER, title: "Physics midterm", subjectId: "s2", date: inDays(3), time: "09:45", type: "exam", notes: "", deleted: false }),
+    row("e2", { userId: USER, title: "far away", subjectId: "", date: "2027-05-01", time: "", type: "event", notes: "", deleted: false }),
+  ],
 };
 
 const sent = [];
 globalThis.fetch = async (url, options = {}) => {
   const u = String(url);
-  if (u.includes("/documents?queries=")) {
+  if (u.includes("/collections/snapshots/documents?")) {
     return { status: 200, ok: true, json: async () => ({ documents: [{ userId: USER }, { userId: USER }] }) };
   }
-  const m = u.match(/\/documents\/([0-9a-f]{32})$/);
-  if (m && options.method !== "POST") {
-    for (const [key, payload] of Object.entries(DATA)) {
-      if (m[1] === docId(key)) return { status: 200, ok: true, json: async () => ({ data: JSON.stringify(payload) }) };
+  const doc = u.match(/\/documents\/([0-9a-f]{32})$/);
+  if (doc && options.method !== "POST") {
+    for (const [key, payload] of Object.entries(SNAPSHOTS)) {
+      if (doc[1] === docId(key)) return { status: 200, ok: true, json: async () => ({ data: JSON.stringify(payload) }) };
     }
     return { status: 404, ok: false, statusText: "not_found" };
+  }
+  const table = u.match(/\/tablesdb\/([^/]+)\/tables\/([^/]+)\/rows/);
+  if (table) {
+    return { status: 200, ok: true, json: async () => ({ total: TABLES[table[2]].length, rows: TABLES[table[2]] }) };
   }
   if (u.endsWith("/messaging/messages/push")) {
     sent.push(JSON.parse(options.body));

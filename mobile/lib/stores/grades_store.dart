@@ -118,4 +118,25 @@ class GradesStore extends PersistedStore {
     notifyListeners();
     persist();
   }
+
+  /// row-level sync merge: insert or replace a single grade entry
+  void upsertOne(GradeEntry entry) {
+    final next = [..._entries];
+    final i = next.indexWhere((e) => e.id == entry.id);
+    if (i >= 0) {
+      next[i] = entry;
+    } else {
+      next.add(entry);
+    }
+    _entries = next;
+    notifyListeners();
+    persist();
+  }
+
+  /// row-level sync merge: drop a single grade entry
+  void removeOne(String id) {
+    _entries = _entries.where((e) => e.id != id).toList();
+    notifyListeners();
+    persist();
+  }
 }

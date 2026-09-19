@@ -15,6 +15,8 @@ interface StudyRoomState {
   selectedDocIds: string[];
   toggleSelectedDoc: (id: string) => void;
   setSelectedDocs: (ids: string[]) => void;
+  /** structured sync: replace selection with the cloud state */
+  replaceSelectedDocIds: (ids: string[]) => void;
 
   decks: Deck[];
   /** decks deleted while a cloud sync was unavailable/pending */
@@ -23,11 +25,17 @@ interface StudyRoomState {
   removeDeck: (id: string) => void;
   /** deck deleted on ANOTHER device (realtime) — no deletion marker */
   removeDeckSilently: (id: string) => void;
+  /** structured sync: deck upserted from the cloud */
+  upsertDeck: (deck: Deck) => void;
 
   chat: ChatMessage[];
   appendMessage: (message: ChatMessage) => void;
   updateLastAssistant: (content: string, sources?: string[]) => void;
   clearChat: () => void;
+  /** structured sync: replace chat with the cloud state */
+  replaceChat: (
+    messages: Array<{ role: string; content: string; sources?: string[] }>,
+  ) => void;
 }
 
 export const useStudyRoomStore = create<StudyRoomState>()(
@@ -51,6 +59,7 @@ export const useStudyRoomStore = create<StudyRoomState>()(
             : [...s.selectedDocIds, id],
         })),
       setSelectedDocs: (ids) => set({ selectedDocIds: ids }),
+      replaceSelectedDocIds: (ids) => set({ selectedDocIds: ids }),
 
       decks: [],
       deletedDeckIds: [],
@@ -66,6 +75,10 @@ export const useStudyRoomStore = create<StudyRoomState>()(
         })),
       removeDeckSilently: (id) =>
         set((s) => ({ decks: s.decks.filter((d) => d.id !== id) })),
+      upsertDeck: (deck) =>
+        set((s) => ({
+          decks: [...s.decks.filter((d) => d.id !== deck.id), deck],
+        })),
 
       chat: [],
       appendMessage: (message) => set((s) => ({ chat: [...s.chat, message] })),
@@ -77,6 +90,14 @@ export const useStudyRoomStore = create<StudyRoomState>()(
           return { chat };
         }),
       clearChat: () => set({ chat: [] }),
+      replaceChat: (messages) =>
+        set(() => ({
+          chat: messages.map((m) => ({
+            role: m.role === "user" ? ("user" as const) : ("assistant" as const),
+            content: m.content,
+            sources: m.sources,
+          })),
+        })),
     }),
     {
       name: "semester.studyroom",

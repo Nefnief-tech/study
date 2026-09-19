@@ -19,6 +19,8 @@ interface HomeworkState {
   updateHomework: (id: string, patch: Partial<Homework>) => void;
   toggleHomework: (id: string) => void;
   removeHomework: (id: string) => void;
+  upsertOne: (homework: Homework) => void;
+  removeOne: (id: string) => void;
   detachSubject: (subjectId: string) => void;
   clearAll: () => void;
 }
@@ -51,6 +53,12 @@ export const useHomeworkStore = create<HomeworkState>()(
           homeworks: s.homeworks.map((h) => (h.id === id ? { ...h, done: !h.done } : h)),
         })),
       removeHomework: (id) =>
+        set((s) => ({ homeworks: s.homeworks.filter((h) => h.id !== id) })),
+      upsertOne: (homework) =>
+        set((s) => ({
+          homeworks: [...s.homeworks.filter((h) => h.id !== homework.id), homework],
+        })),
+      removeOne: (id) =>
         set((s) => ({ homeworks: s.homeworks.filter((h) => h.id !== id) })),
       detachSubject: (subjectId) =>
         set((s) => ({

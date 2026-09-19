@@ -10,7 +10,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/types.dart';
 import '../stores/auth_store.dart';
-import '../stores/grades_store.dart' show normalizeGradeEntries;
 import '../stores/registry.dart';
 import '../stores/studyroom_store.dart';
 import 'client.dart';
@@ -76,30 +75,6 @@ List<Map<String, dynamic>> _listFromDoc(Map<String, dynamic> doc, String field) 
 }
 
 final _keys = <String, _KeyOps>{
-  'subjects': _KeyOps(
-    key: 'subjects',
-    read: () => _listPayload(
-        'subjects', Stores.I.subjects.subjects.map((s) => s.toJson()).toList()),
-    apply: (doc) => Stores.I.subjects
-        .replaceAll(_listFromDoc(doc, 'subjects').map(Subject.fromJson).toList()),
-    isEmpty: () => Stores.I.subjects.subjects.isEmpty,
-  ),
-  'todos': _KeyOps(
-    key: 'todos',
-    read: () =>
-        _listPayload('todos', Stores.I.todos.todos.map((t) => t.toJson()).toList()),
-    apply: (doc) =>
-        Stores.I.todos.replaceAll(_listFromDoc(doc, 'todos').map(Todo.fromJson).toList()),
-    isEmpty: () => Stores.I.todos.todos.isEmpty,
-  ),
-  'homework': _KeyOps(
-    key: 'homework',
-    read: () => _listPayload(
-        'homeworks', Stores.I.homework.homeworks.map((h) => h.toJson()).toList()),
-    apply: (doc) => Stores.I.homework
-        .replaceAll(_listFromDoc(doc, 'homeworks').map(Homework.fromJson).toList()),
-    isEmpty: () => Stores.I.homework.homeworks.isEmpty,
-  ),
   'timetable': _KeyOps(
     key: 'timetable',
     read: () => _listPayload(
@@ -107,22 +82,6 @@ final _keys = <String, _KeyOps>{
     apply: (doc) => Stores.I.timetable
         .replaceEntries(_listFromDoc(doc, 'entries').map(TimetableEntry.fromJson).toList()),
     isEmpty: () => Stores.I.timetable.entries.isEmpty,
-  ),
-  'grades': _KeyOps(
-    key: 'grades',
-    read: () => _listPayload(
-        'entries', Stores.I.grades.entries.map((e) => e.toJson()).toList()),
-    apply: (doc) => Stores.I.grades
-        .replaceEntries(normalizeGradeEntries(_listFromDoc(doc, 'entries'))),
-    isEmpty: () => Stores.I.grades.entries.isEmpty,
-  ),
-  'events': _KeyOps(
-    key: 'events',
-    read: () => _listPayload(
-        'events', Stores.I.events.events.map((e) => e.toJson()).toList()),
-    apply: (doc) => Stores.I.events
-        .replaceAll(_listFromDoc(doc, 'events').map(StudyEvent.fromJson).toList()),
-    isEmpty: () => Stores.I.events.events.isEmpty,
   ),
   'studyroom': _KeyOps(
     key: 'studyroom',
@@ -168,6 +127,274 @@ final _keys = <String, _KeyOps>{
 };
 
 String _collectionFor(String key) => _keys[key]!.collection ?? kSnapshotsCollectionId;
+
+/* ---------------- structured row collections ----------------
+ * subjects/todos/homeworks/grades/events live as one row per entity in
+ * Appwrite tables (rowId = the entity UUID, deleted = tombstone). */
+
+final tablesDB = TablesDB(appwriteClient);
+
+const _rowTables = {
+  'subjects': 'subjects',
+  'todos': 'todos',
+  'homework': 'homeworks',
+  'grades': 'grades',
+  'events': 'events',
+};
+
+String _rowDigestOf(Map<String, dynamic> row) {
+  final canonical = Map<String, dynamic>.from(row)
+    ..remove('userId')
+    ..remove('deleted')
+    // server fields ($createdAt/$updatedAt/…) leak into Row.data when the
+    // response is flat — they change on every write and would break digests
+    ..removeWhere((k, _) => k.startsWith(r'$'));
+  return sha256.convert(utf8.encode(jsonEncode(canonical))).toString();
+}
+
+/// adapter: how a row store maps between entities and table rows
+/// type-erased on purpose: the list holds every adapter as the same class,
+/// so the entity params are dynamic and dispatch happens inside the closures
+class _RowAdapter {
+  final String storeKey;
+  final String table;
+  final List<dynamic> Function() list;
+  final String Function(dynamic entity) idOf;
+  final Map<String, dynamic> Function(dynamic entity) toRow;
+  final dynamic Function(String id, Map<String, dynamic> row) fromRow;
+  final void Function(dynamic entity) upsert;
+  final void Function(String id) remove;
+
+  const _RowAdapter({
+    required this.storeKey,
+    required this.table,
+    required this.list,
+    required this.idOf,
+    required this.toRow,
+    required this.fromRow,
+    required this.upsert,
+    required this.remove,
+  });
+}
+
+final _rowAdapters = <_RowAdapter>[
+  _RowAdapter(
+    storeKey: 'subjects',
+    table: 'subjects',
+    list: () => Stores.I.subjects.subjects,
+    idOf: (s) => s.id,
+    toRow: (s) => {'name': s.name, 'color': s.color},
+    fromRow: (id, row) => Subject(
+      id: id,
+      name: (row['name'] as String?) ?? '',
+      color: (row['color'] as String?) ?? '#3E6B4F',
+    ),
+    upsert: (s) => Stores.I.subjects.upsertOne(s),
+    remove: (id) => Stores.I.subjects.removeOne(id),
+  ),
+  _RowAdapter(
+    storeKey: 'todos',
+    table: 'todos',
+    list: () => Stores.I.todos.todos,
+    idOf: (t) => t.id,
+    toRow: (t) => {
+      'title': t.title,
+      'notes': t.notes ?? '',
+      'due': t.due ?? '',
+      'priority': t.priority.name,
+      'subjectId': t.subjectId ?? '',
+      'done': t.done,
+      'createdAt': t.createdAt,
+    },
+    fromRow: (id, row) => Todo(
+      id: id,
+      title: (row['title'] as String?) ?? '',
+      notes: (row['notes'] as String?)?.isEmpty == false ? row['notes'] as String : null,
+      due: (row['due'] as String?)?.isEmpty == false ? row['due'] as String : null,
+      priority: priorityFromJson(row['priority'] as String?),
+      subjectId: (row['subjectId'] as String?)?.isEmpty == false ? row['subjectId'] as String : null,
+      done: row['done'] == true,
+      createdAt: (row['createdAt'] as num?)?.toInt() ?? 0,
+    ),
+    upsert: (t) => Stores.I.todos.upsertOne(t),
+    remove: (id) => Stores.I.todos.removeOne(id),
+  ),
+  _RowAdapter(
+    storeKey: 'homework',
+    table: 'homeworks',
+    list: () => Stores.I.homework.homeworks,
+    idOf: (h) => h.id,
+    toRow: (h) => {
+      'title': h.title,
+      'notes': h.notes ?? '',
+      'due': h.due ?? '',
+      'priority': h.priority.name,
+      'subjectId': h.subjectId ?? '',
+      'done': h.done,
+      'createdAt': h.createdAt,
+    },
+    fromRow: (id, row) => Homework(
+      id: id,
+      title: (row['title'] as String?) ?? '',
+      notes: (row['notes'] as String?)?.isEmpty == false ? row['notes'] as String : null,
+      due: (row['due'] as String?)?.isEmpty == false ? row['due'] as String : null,
+      priority: priorityFromJson(row['priority'] as String?),
+      subjectId: (row['subjectId'] as String?)?.isEmpty == false ? row['subjectId'] as String : null,
+      done: row['done'] == true,
+      createdAt: (row['createdAt'] as num?)?.toInt() ?? 0,
+    ),
+    upsert: (h) => Stores.I.homework.upsertOne(h),
+    remove: (id) => Stores.I.homework.removeOne(id),
+  ),
+  _RowAdapter(
+    storeKey: 'grades',
+    table: 'grades',
+    list: () => Stores.I.grades.entries,
+    idOf: (g) => g.id,
+    toRow: (g) => {
+      'subjectId': g.subjectId ?? '',
+      'title': g.title,
+      'points': g.points.toInt(),
+      'weight': g.weight.toDouble(),
+      'date': g.date ?? '',
+    },
+    fromRow: (id, row) => GradeEntry(
+      id: id,
+      subjectId: (row['subjectId'] as String?)?.isEmpty == false ? row['subjectId'] as String : null,
+      title: (row['title'] as String?) ?? '',
+      points: (row['points'] as num?)?.toInt() ?? 0,
+      weight: (row['weight'] as num?) ?? 1,
+      date: (row['date'] as String?)?.isEmpty == false ? row['date'] as String : null,
+    ),
+    upsert: (g) => Stores.I.grades.upsertOne(g),
+    remove: (id) => Stores.I.grades.removeOne(id),
+  ),
+  _RowAdapter(
+    storeKey: 'events',
+    table: 'events',
+    list: () => Stores.I.events.events,
+    idOf: (e) => e.id,
+    toRow: (e) => {
+      'title': e.title,
+      'date': e.date,
+      'time': e.time ?? '',
+      'type': e.type.name,
+      'subjectId': e.subjectId ?? '',
+      'notes': e.notes ?? '',
+    },
+    fromRow: (id, row) => StudyEvent(
+      id: id,
+      title: (row['title'] as String?) ?? '',
+      date: (row['date'] as String?) ?? '',
+      time: (row['time'] as String?)?.isEmpty == false ? row['time'] as String : null,
+      type: eventTypeFromJson(row['type'] as String?),
+      subjectId: (row['subjectId'] as String?)?.isEmpty == false ? row['subjectId'] as String : null,
+      notes: (row['notes'] as String?)?.isEmpty == false ? row['notes'] as String : null,
+    ),
+    upsert: (e) => Stores.I.events.upsertOne(e),
+    remove: (id) => Stores.I.events.removeOne(id),
+  ),
+];
+
+final rowPushTimers = <String, Timer>{};
+
+/// debounced row sync (called from store listeners)
+void scheduleRowSync(String storeKey) {
+  if (applyingRemote) return;
+  final auth = Stores.I.auth;
+  if (auth.status != SyncStatus.signedIn || auth.user == null) return;
+  rowPushTimers[storeKey]?.cancel();
+  rowPushTimers[storeKey] = Timer(const Duration(milliseconds: PUSH_DEBOUNCE_MS), () {
+    final user = Stores.I.auth.user;
+    if (user != null && Stores.I.auth.status == SyncStatus.signedIn) {
+      syncRowStore(user, storeKey);
+    }
+  });
+}
+
+/// sync one row store: push local diff, then pull + merge cloud rows
+Future<void> syncRowStore(AuthUser user, String storeKey) async {
+  final adapter = _rowAdapters.firstWhere((a) => a.storeKey == storeKey);
+  final digests = Map<String, String>.from(
+      Stores.I.syncMeta.rowDigests[adapter.table] ?? const {});
+
+  // ---- push: diff local entities vs last-synced digests ----
+  final current = adapter.list();
+  final currentDigests = <String, String>{};
+  for (final entity in current) {
+    final id = adapter.idOf(entity);
+    final row = {...adapter.toRow(entity), 'userId': user.id};
+    final digest = _rowDigestOf(row);
+    currentDigests[id] = digest;
+    if (digests[id] != digest) {
+      await tablesDB.upsertRow(
+        databaseId: kDatabaseId,
+        tableId: adapter.table,
+        rowId: id,
+        data: row,
+        permissions: [
+          Permission.read(Role.user(user.id)),
+          Permission.write(Role.user(user.id)),
+        ],
+      );
+    }
+  }
+
+  // ---- deletions: digests known to the cloud that vanished locally ----
+  for (final id in digests.keys.toList()) {
+    if (currentDigests.containsKey(id)) continue;
+    try {
+      await tablesDB.updateRow(
+        databaseId: kDatabaseId,
+        tableId: adapter.table,
+        rowId: id,
+        data: {'deleted': true, 'userId': user.id},
+      );
+    } catch (_) {
+      // row never existed / already gone — fine
+    }
+    digests.remove(id);
+  }
+
+  // ---- pull: merge cloud rows (locally-changed rows win) ----
+  final rows = await tablesDB.listRows(
+    databaseId: kDatabaseId,
+    tableId: adapter.table,
+    queries: [Query.equal('userId', user.id), Query.limit(100)],
+  );
+  final localById = {for (final entity in current) adapter.idOf(entity): entity};
+  // merging writes into the stores — suppress the echo back into scheduleRowSync
+  final wasApplying = applyingRemote;
+  applyingRemote = true;
+  try {
+    for (final doc in rows.rows) {
+      final row = Map<String, dynamic>.from(doc.data);
+      final id = doc.$id;
+
+      if (row['deleted'] == true) {
+        if (localById.containsKey(id)) adapter.remove(id);
+        digests.remove(id);
+        continue;
+      }
+
+      final local = localById[id];
+      if (local != null) {
+        final localDigest = _rowDigestOf({...adapter.toRow(local), 'userId': user.id});
+        if (localDigest != _rowDigestOf(row)) continue; // pending local edit wins
+      }
+
+      final entity = adapter.fromRow(id, row);
+      adapter.upsert(entity);
+      digests[id] = _rowDigestOf({...adapter.toRow(entity), 'userId': user.id});
+    }
+  } finally {
+    applyingRemote = wasApplying;
+  }
+
+  debugPrint(
+      '[sync] rows $storeKey: ${current.length} local, ${rows.rows.length} cloud → merged');
+  Stores.I.syncMeta.setRowDigests(adapter.table, digests);
+}
 
 /// set while the sync engine writes remote data into the stores, so those
 /// writes don't schedule pushes back to the cloud
@@ -493,11 +720,14 @@ void _subscribeStores() {
   if (subscribed) return;
   subscribed = true;
 
-  Stores.I.subjects.addListener(() => _schedule('subjects'));
-  Stores.I.todos.addListener(() => _schedule('todos'));
-  Stores.I.homework.addListener(() => _schedule('homework'));
-  Stores.I.grades.addListener(() => _schedule('grades'));
-  Stores.I.events.addListener(() => _schedule('events'));
+  // structured rows
+  Stores.I.subjects.addListener(() => scheduleRowSync('subjects'));
+  Stores.I.todos.addListener(() => scheduleRowSync('todos'));
+  Stores.I.homework.addListener(() => scheduleRowSync('homework'));
+  Stores.I.grades.addListener(() => scheduleRowSync('grades'));
+  Stores.I.events.addListener(() => scheduleRowSync('events'));
+
+  // blobs
   Stores.I.timetable.addListener(() => _schedule('timetable'));
   _room.addListener(() => _schedule('studyroom'));
   // decks live in the study-room store too, but sync as their own documents
@@ -590,6 +820,21 @@ Future<void> _runReconcile(AuthUser user) async {
     if (remaining.isNotEmpty) {
       auth.setSyncError(
           'sync incomplete — ${remaining.join(", ")} could not be loaded; check your connection and tap Sync now');
+      _scheduleRetryLoop();
+      return;
+    }
+
+    // structured rows: push local diffs, then pull + merge. On a fresh device
+    // this is a pure pull — no local entities and no stored digests means the
+    // push and deletion phases have nothing to do.
+    try {
+      for (final adapter in _rowAdapters) {
+        await syncRowStore(user, adapter.storeKey);
+      }
+    } catch (e) {
+      debugPrint('[sync] row sync failed: $e');
+      auth.setSyncError(
+          'sync incomplete — structured data could not be loaded; check your connection and tap Sync now');
       _scheduleRetryLoop();
       return;
     }
@@ -759,6 +1004,8 @@ void _startRealtime(AuthUser user) {
     'databases.$kDatabaseId.collections.$kSnapshotsCollectionId.documents',
     'databases.$kDatabaseId.collections.$kChatsCollectionId.documents',
     'databases.$kDatabaseId.collections.$kDecksCollectionId.documents',
+    for (final table in _rowTables.values)
+      'databases.$kDatabaseId.tables.$table.rows',
   ]);
   _realtimeSub!.stream.listen(
     (msg) {
@@ -783,6 +1030,18 @@ void _onRealtimeEvent(RealtimeMessage msg) {
   if (auth.status != SyncStatus.signedIn || user == null) return;
   final doc = msg.payload;
   if (doc['userId'] is String && doc['userId'] != user.id) return; // another user's doc
+
+  // structured row events → debounced store sync (pull merges the change)
+  final event = msg.events.firstOrNull ?? '';
+  if (event.contains('/tables/')) {
+    for (final entry in _rowTables.entries) {
+      if (event.contains('/tables/${entry.value}/rows')) {
+        scheduleRowSync(entry.key);
+        return;
+      }
+    }
+    return;
+  }
 
   // deletions only matter for decks (snapshots are upserted, never deleted)
   if (msg.events.any((e) => e.endsWith('.delete'))) {

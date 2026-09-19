@@ -22,12 +22,18 @@ Add a login and per-user cloud sync on top of the localStorage apps:
    document permissions — the server API key is used by the script only, never shipped)
 
 Then restart; the sidebar shows "Sign in to sync". Sync model: **the cloud is the source
-of truth on page load** — on a signed-in load every store is replaced by its cloud snapshot,
-and afterwards each local change is pushed as a per-user snapshot document (debounced ~1.2s).
-The one exception: local edits whose push hasn't succeeded yet (offline) keep a dirty flag
-(`semester.syncmeta`) and win over the cloud on the next load, so offline work is never
-silently clobbered. Sign-out keeps data on the device. Without Appwrite env vars the app
-stays local-only.
+of truth on page load** — on a signed-in load every store is replaced by its cloud state,
+and afterwards each local change is pushed (debounced ~1.2s). Subjects, todos, homeworks,
+grades and events sync as **structured rows** — one row per entity in Appwrite `tablesdb`
+tables (`semester/subjects`, `todos`, `homeworks`, `grades`, `events`; rowId = entity UUID,
+`deleted` tombstone, sha256 content digests, pending-local edits win until the push lands).
+Timetable, study room, chats and decks remain JSON snapshot documents, synced the same way
+as before. Provision the row tables once with
+`APPWRITE_PROJECT_ID=… APPWRITE_API_KEY=… node scripts/appwrite-structured-schema.mjs`
+and migrate existing snapshot data with `scripts/appwrite-migrate-blobs-to-rows.mjs`.
+Offline work is never silently clobbered: local edits whose push hasn't succeeded yet keep
+a dirty flag (`semester.syncmeta`) and win over the cloud on the next load. Sign-out keeps
+data on the device. Without Appwrite env vars the app stays local-only.
 
 ## AI setup (Study Room)
 

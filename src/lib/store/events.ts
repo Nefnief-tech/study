@@ -17,6 +17,8 @@ interface EventsState {
   addEvent: (input: EventInput) => void;
   updateEvent: (id: string, patch: Partial<StudyEvent>) => void;
   removeEvent: (id: string) => void;
+  upsertOne: (event: StudyEvent) => void;
+  removeOne: (id: string) => void;
   detachSubject: (subjectId: string) => void;
   clearAll: () => void;
 }
@@ -36,6 +38,9 @@ export const useEventsStore = create<EventsState>()(
           ),
         })),
       removeEvent: (id) => set((s) => ({ events: s.events.filter((e) => e.id !== id) })),
+  upsertOne: (event) =>
+    set((s) => ({ events: [...s.events.filter((e) => e.id !== event.id), event] })),
+  removeOne: (id) => set((s) => ({ events: s.events.filter((e) => e.id !== id) })),
       detachSubject: (subjectId) =>
         set((s) => ({
           events: s.events.map((e) =>

@@ -104,4 +104,25 @@ class HomeworkStore extends PersistedStore {
     notifyListeners();
     persist();
   }
+
+  /// row-level sync merge: insert or replace a single homework
+  void upsertOne(Homework homework) {
+    final next = [..._homeworks];
+    final i = next.indexWhere((h) => h.id == homework.id);
+    if (i >= 0) {
+      next[i] = homework;
+    } else {
+      next.insert(0, homework);
+    }
+    _homeworks = next;
+    notifyListeners();
+    persist();
+  }
+
+  /// row-level sync merge: drop a single homework
+  void removeOne(String id) {
+    _homeworks = _homeworks.where((h) => h.id != id).toList();
+    notifyListeners();
+    persist();
+  }
 }
