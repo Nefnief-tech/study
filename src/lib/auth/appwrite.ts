@@ -56,6 +56,17 @@ export async function pingAppwrite(): Promise<string> {
 
 let cachedJwt: { token: string; at: number } | null = null;
 
+/** mint (or reuse a <10 min old) Appwrite JWT — throws when it can't */
+export async function getAppwriteJwt(forceRefresh = false): Promise<string> {
+  if (!account) throw new Error("Auth is not configured");
+  if (!forceRefresh && cachedJwt && Date.now() - cachedJwt.at <= 10 * 60 * 1000) {
+    return cachedJwt.token;
+  }
+  const { jwt } = await account.createJWT();
+  cachedJwt = { token: jwt, at: Date.now() };
+  return jwt;
+}
+
 /**
  * Authorization header carrying a short-lived Appwrite JWT (cached ~10 min),
  * used to authenticate browser → Next.js API route calls.
@@ -63,12 +74,24 @@ let cachedJwt: { token: string; at: number } | null = null;
 export async function getAuthHeaders(): Promise<Record<string, string>> {
   if (!account) return {};
   try {
-    if (!cachedJwt || Date.now() - cachedJwt.at > 10 * 60 * 1000) {
-      const { jwt } = await account.createJWT();
-      cachedJwt = { token: jwt, at: Date.now() };
-    }
-    return { authorization: `Bearer ${cachedJwt.token}` };
+    const jwt = await getAppwriteJwt();
+    return { authorization: `Bearer ${jwt}` };
   } catch {
     return {};
   }
+}
+
+/**
+ * Headers for direct browser → Appwrite row REST calls. Appwrite wants its
+ * JWT in `X-Appwrite-JWT` (the Bearer variant is kept for compatibility).
+ * Throws when no JWT can be minted — callers surface that instead of silently
+ * sending an unauthenticated request.
+ */
+export async function getAppwriteJwtHeaders(forceRefresh = false): Promise<Record<string, string>> {
+  const jwt = await getAppwriteJwt(forceRefresh);
+  return {
+    "X-Appwrite-JWT": jwt,
+    authorization: `Bearer ${jwt}`,
+    "content-type": "application/json",
+  };
 }

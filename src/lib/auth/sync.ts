@@ -5,7 +5,7 @@ import {
   appwriteClient,
   appwriteConfigured,
   getCurrentUser,
-  getAuthHeaders,
+  getAppwriteJwtHeaders,
   type AuthUser,
 } from "./appwrite";
 import { useAuthStore, useSyncMetaStore } from "@/lib/store/auth";
@@ -443,26 +443,36 @@ async function rowDigest(entity: { id: string }, def: RowStoreDef) {
 const rowsUri = (table: string, rowId?: string) =>
   `${REST_BASE}/tablesdb/${DATABASE_ID}/tables/${table}/rows${rowId ? `/${rowId}` : ""}`;
 
+/** row request headers; a stale cached JWT is the classic 401 — refresh once */
+async function rowHeaders(): Promise<Record<string, string>> {
+  return getAppwriteJwtHeaders();
+}
+
+async function rowFetch(path: string, init: RequestInit): Promise<Response> {
+  let res = await fetch(path, { ...init, headers: await rowHeaders() });
+  if (res.status === 401) {
+    res = await fetch(path, { ...init, headers: await getAppwriteJwtHeaders(true) });
+  }
+  return res;
+}
+
 async function restListRows(table: string, userId: string): Promise<Array<RowData & { $id: string }>> {
-  const headers = await getAuthHeaders();
   const queries = JSON.stringify([`equal("userId","${userId}")`, "limit(100)"]);
-  const res = await fetch(`${rowsUri(table)}?queries=${encodeURIComponent(queries)}`, { headers });
+  const res = await rowFetch(`${rowsUri(table)}?queries=${encodeURIComponent(queries)}`, {});
   if (!res.ok) throw new Error(`list ${table} → ${res.status}`);
   const json = (await res.json()) as { rows?: Array<RowData & { $id: string }> };
   return json.rows ?? [];
 }
 
 async function restUpsertRow(table: string, rowId: string, data: RowData, userId: string) {
-  const headers = { "content-type": "application/json", ...(await getAuthHeaders()) };
-  let res = await fetch(rowsUri(table, rowId), {
+  const body = JSON.stringify({ data });
+  let res = await rowFetch(rowsUri(table, rowId), {
     method: "PATCH",
-    headers,
-    body: JSON.stringify({ data }),
+    body,
   });
   if (res.status === 404) {
-    res = await fetch(rowsUri(table), {
+    res = await rowFetch(rowsUri(table), {
       method: "POST",
-      headers,
       body: JSON.stringify({
         rowId,
         data,
@@ -476,10 +486,8 @@ async function restUpsertRow(table: string, rowId: string, data: RowData, userId
 }
 
 async function restSoftDeleteRow(table: string, rowId: string) {
-  const headers = { "content-type": "application/json", ...(await getAuthHeaders()) };
-  const res = await fetch(rowsUri(table, rowId), {
+  const res = await rowFetch(rowsUri(table, rowId), {
     method: "PATCH",
-    headers,
     body: JSON.stringify({ data: { deleted: true } }),
   });
   if (!res.ok && res.status !== 404) {
