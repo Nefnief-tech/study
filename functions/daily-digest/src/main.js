@@ -3,26 +3,26 @@ import { createHash } from "node:crypto";
 /**
  * Semester — daily digest (Appwrite Function, scheduled daily).
  *
- * For every user that has a synced timetable it sends up to three push
- * notifications via Appwrite Messaging:
+ * For every user that has synced data it sends up to three push notifications
+ * via Appwrite Messaging:
  *
- *   1. "Classes tomorrow"  — the weekly timetable for the next day, with
+ *   1. "Classes tomorrow"  — the timetable for the next day, with
  *      CANCELLED / substituted lessons taken from the mirrored Eltern-portal
- *      substitute plan (the apps mirror the *plan only* into the `portal`
- *      snapshot — credentials never leave the device).
+ *      substitute plan (the apps mirror the *plan only* — credentials never
+ *      leave the device).
  *   2. "Due soon"          — open todos & homework that are overdue or due
  *      tomorrow.
  *   3. "This week"         — exams, deadlines & events within the next 7 days.
  *
- * Subjects / todos / homework / events are read as STRUCTURED ROWS from the
- * `semester` tables (one row per entity, rowId = entity UUID, `deleted`
- * tombstones); timetable + portal remain snapshot blobs.
+ * Everything is read as STRUCTURED ROWS from the `semester` tables (one row
+ * per entity, `deleted` tombstones): subjects · todos · homeworks · events ·
+ * timetable_entries · portal_entries · portal_courses.
  *
  * Empty digests are skipped; each message id is deterministic per day, so
  * re-runs on the same day never double-send.
  *
- * Required function scopes (set in appwrite.config.json → functions[].scopes):
- *   documents.read  — read snapshot documents and table rows
+ * Required function scopes (appwrite.config.json → functions[].scopes):
+ *   documents.read  — read table rows
  *   messages.write  — create push messages
  * The scoped API key is injected as APPWRITE_API_KEY.
  */
@@ -36,9 +36,6 @@ const PROJECT_ID =
 const API_KEY = process.env.APPWRITE_API_KEY || "";
 
 const DATABASE_ID = "semester";
-const SNAPSHOTS = "snapshots";
-/** store keys inside the snapshots collection */
-const KEYS = ["timetable", "todos", "homework", "events", "subjects", "portal"];
 
 /** timetable day keys, Monday-first */
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -48,11 +45,6 @@ const JS_DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 /* ------------------------------------------------------------------ */
 /* Appwrite REST helpers (no SDK — keeps the deployment tiny)          */
 /* ------------------------------------------------------------------ */
-
-function docId(userId, key) {
-  // must match src/lib/auth/sync.ts and mobile/lib/appwrite/sync.dart
-  return createHash("sha256").update(`${userId}:${SNAPSHOTS}:${key}`).digest("hex").slice(0, 32);
-}
 
 async function aw(path, options = {}) {
   const res = await fetch(`${ENDPOINT}${path}`, {
@@ -75,20 +67,7 @@ async function aw(path, options = {}) {
   return res.json();
 }
 
-/** one snapshot document (parsed data JSON) or null */
-async function getSnapshot(userId, key) {
-  const doc = await aw(
-    `/databases/${DATABASE_ID}/collections/${SNAPSHOTS}/documents/${docId(userId, key)}`,
-  );
-  if (!doc) return null;
-  try {
-    return JSON.parse(doc.data ?? "{}");
-  } catch {
-    return null;
-  }
-}
-
-/** structured rows of one table for a user (new tablesdb API, JSON queries) */
+/** structured rows of one table (new tablesdb API, JSON queries) */
 async function listRows(table, userId) {
   const params = new URLSearchParams();
   [
@@ -101,37 +80,23 @@ async function listRows(table, userId) {
   return res?.rows ?? [];
 }
 
-/** row → entity shape the digest builders expect (nullish → null) */
-function rowEntity(r) {
-  return {
-    id: r.$id,
-    title: r.title ?? "",
-    notes: r.notes || null,
-    due: r.due || null,
-    priority: r.priority ?? "normal",
-    subjectId: r.subjectId || null,
-    done: r.done === true,
-    createdAt: r.createdAt ?? 0,
-    date: r.date || null,
-    time: r.time || null,
-    type: r.type ?? "event",
-    name: r.name ?? "",
-    color: r.color ?? "",
-  };
+/** list rows across ALL users of a table (discovery, no userId filter) */
+async function listAllRows(table) {
+  const params = new URLSearchParams();
+  params.append("queries[0]", JSON.stringify({ method: "limit", values: [100] }));
+  const res = await aw(`/tablesdb/${DATABASE_ID}/tables/${table}/rows?${params.toString()}`);
+  return res?.rows ?? [];
 }
 
-/** every user that has a timetable synced */
-async function usersWithTimetable() {
-  // SDK v27 wire format: each query is a JSON object {method, attribute, values}
-  const params = new URLSearchParams();
-  [
-    { method: "equal", attribute: "key", values: ["timetable"] },
-    { method: "limit", values: [100] },
-  ].forEach((q, i) => params.append(`queries[${i}]`, JSON.stringify(q)));
-  const res = await aw(
-    `/databases/${DATABASE_ID}/collections/${SNAPSHOTS}/documents?${params.toString()}`,
-  );
-  return [...new Set((res?.documents ?? []).map((d) => d.userId).filter(Boolean))];
+/** every user that has at least one synced row (union over a few tables) */
+async function usersWithData() {
+  const userIds = new Set();
+  for (const table of ["subjects", "timetable_entries", "todos", "events"]) {
+    const rows = await listAllRows(table).catch(() => []);
+    for (const row of rows) if (row.userId) userIds.add(row.userId);
+    if (userIds.size > 0) break; // one table listing every user is enough
+  }
+  return [...userIds];
 }
 
 async function sendPush(userId, kind, title, body) {
@@ -181,8 +146,7 @@ function addDays(n) {
 /* digest builders — each returns {title, body} or null (→ not sent)   */
 /* ------------------------------------------------------------------ */
 
-function classesTomorrow(timetable, portal) {
-  const entries = timetable?.entries ?? [];
+function classesTomorrow(entries, subs, courses) {
   if (entries.length === 0) return null;
 
   const t = addDays(1);
@@ -192,10 +156,9 @@ function classesTomorrow(timetable, portal) {
   const lessons = entries.filter((e) => e.day === day);
   if (lessons.length === 0) return null; // weekend / free day
 
-  // mirrored substitute plan for tomorrow (device credentials never sync)
-  const portalDay = (portal?.days ?? []).find((d) => parseDeDate(d.date) === tKey);
-  const subs = portalDay?.entries ?? [];
-  const courses = (portal?.courses ?? []).map((c) => String(c).trim());
+  // mirrored substitute plan for tomorrow
+  const tomorrowSubs = subs.filter((s) => parseDeDate(s.date) === tKey);
+  const courseCodes = courses.map((c) => String(c).trim());
 
   const periods = [...new Set(lessons.map((e) => e.period))].sort((a, b) => a - b);
   const lines = [];
@@ -204,10 +167,10 @@ function classesTomorrow(timetable, portal) {
 
   for (const p of periods) {
     for (const e of lessons.filter((x) => x.period === p)) {
-      const cellSubs = subs.filter(
+      const cellSubs = tomorrowSubs.filter(
         (s) =>
           parseInt(s.period, 10) === p &&
-          courses.includes(String(s.course).trim()) &&
+          courseCodes.includes(String(s.course).trim()) &&
           (String(e.subject).trim() === String(s.course).trim() ||
             String(e.teacher ?? "").trim() === String(s.course).trim()),
       );
@@ -232,7 +195,7 @@ function classesTomorrow(timetable, portal) {
     title: `Tomorrow${weekday ? ` (${weekday})` : ""} · ${lessons.length} lessons${cancelled ? ` · ${cancelled} cancelled` : ""}`,
     body:
       lines.join("\n") +
-      (portalDay
+      (subs.length
         ? ""
         : "\n\n(no Vertretungsplan mirrored — open the Timetable page once while signed in to include cancellations)"),
     meta: { cancelled, substituted },
@@ -325,33 +288,38 @@ export default async ({ req, res, log, error }) => {
 
   let userIds;
   try {
-    userIds = await usersWithTimetable();
+    userIds = await usersWithData();
   } catch (e) {
-    error(`Could not list snapshots: ${e.message}`);
+    error(`Could not list rows: ${e.message}`);
     return res.json({ ok: false, error: "database_read_failed", detail: e.message }, 500);
   }
 
   const results = [];
   for (const userId of userIds) {
     try {
-      const [timetable, portal, subjectRows, todoRows, homeworkRows, eventRows] = await Promise.all([
-        getSnapshot(userId, "timetable"),
-        getSnapshot(userId, "portal"),
-        listRows("subjects", userId),
-        listRows("todos", userId),
-        listRows("homeworks", userId),
-        listRows("events", userId),
-      ]);
+      const [timetableRows, subRows, courseRows, subjectRows, todoRows, homeworkRows, eventRows] =
+        await Promise.all([
+          listRows("timetable_entries", userId),
+          listRows("portal_entries", userId),
+          listRows("portal_courses", userId),
+          listRows("subjects", userId),
+          listRows("todos", userId),
+          listRows("homeworks", userId),
+          listRows("events", userId),
+        ]);
 
       // structured rows → entity arrays (tombstones excluded)
-      const alive = (rows) => rows.filter((r) => r.deleted !== true).map(rowEntity);
+      const alive = (rows) => rows.filter((r) => r.deleted !== true);
       const subjects = alive(subjectRows);
       const todos = alive(todoRows);
       const homework = alive(homeworkRows);
       const events = alive(eventRows);
+      const entries = alive(timetableRows);
+      const subs = alive(subRows);
+      const courses = alive(courseRows).map((r) => r.course);
 
       const messages = [
-        ["classes", classesTomorrow(timetable, portal)],
+        ["classes", classesTomorrow(entries, subs, courses)],
         ["tasks", dueSoon(todos, homework, subjects)],
         ["week", weekAhead(events, subjects)],
       ].filter(([, m]) => m !== null);

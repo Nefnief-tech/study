@@ -1,15 +1,11 @@
-// Local test harness for functions/daily-digest — stubs fetch, feeds a fake
-// timetable/portal snapshot plus structured table rows (incl. a cancelled
-// class and a tombstoned row) and prints the generated pushes.
+// Local test harness for functions/daily-digest — stubs fetch, feeds fake
+// structured table rows (incl. a cancelled class and a tombstoned row) and
+// prints the generated pushes.
 import { createHash } from "node:crypto";
 import handler from "../src/main.js";
 
 const USER = "11111111-2222-3333-4444-555555555555";
 const DB = "semester";
-const snap = "snapshots";
-
-const docId = (key) =>
-  createHash("sha256").update(`${USER}:${snap}:${key}`).digest("hex").slice(0, 32);
 
 // tomorrow as the function will compute it
 const t = new Date();
@@ -25,25 +21,23 @@ const inDays = (n) => {
 };
 const yesterday = inDays(-1);
 
-const SNAPSHOTS = {
-  timetable: { entries: [
-    { day, period: 1, time: "08:00 - 08:45", subject: "2mat1", teacher: "MS. CURVE", room: "B102" },
-    { day, period: 2, time: "08:50 - 09:35", subject: "2ph1", teacher: "", room: "Lab 1" },
-    { day, period: 3, time: "09:55 - 10:40", subject: "2deu1", teacher: "", room: "C110" },
-  ]},
-  portal: {
-    days: [{ date: tDe, weekday: "Fr", entries: [
-      { date: tDe, weekday: "Fr", period: "2", substitute: "", course: "2ph1", room: "", info: "Entfall", cancelled: true },
-      { date: tDe, weekday: "Fr", period: "3", substitute: "FRA. GRÜN", course: "2deu1", courseOld: "2DEU2", room: "R 210", info: "", cancelled: false },
-    ]}],
-    courses: ["2mat1", "2ph1", "2deu1"],
-    stand: null,
-  },
-};
-
 // structured rows — rowId = entity UUID, `deleted` tombstone, $-server fields
 const row = (id, cols) => ({ $id: id, $createdAt: "2026-09-01T00:00:00.000+00:00", ...cols });
 const TABLES = {
+  timetable_entries: [
+    row("tt1", { userId: USER, day, period: 1, time: "08:00 - 08:45", subject: "2mat1", teacher: "MS. CURVE", room: "B102", deleted: false }),
+    row("tt2", { userId: USER, day, period: 2, time: "08:50 - 09:35", subject: "2ph1", teacher: "", room: "Lab 1", deleted: false }),
+    row("tt3", { userId: USER, day, period: 3, time: "09:55 - 10:40", subject: "2deu1", teacher: "", room: "C110", deleted: false }),
+  ],
+  portal_entries: [
+    row("pe1", { userId: USER, date: tDe, weekday: "Fr", period: "2", substitute: "", course: "2ph1", courseOld: "", room: "", info: "Entfall", cancelled: true, deleted: false }),
+    row("pe2", { userId: USER, date: tDe, weekday: "Fr", period: "3", substitute: "FRA. GRÜN", course: "2deu1", courseOld: "2DEU2", room: "R 210", info: "", cancelled: false, deleted: false }),
+  ],
+  portal_courses: [
+    row("pc1", { userId: USER, course: "2mat1", deleted: false }),
+    row("pc2", { userId: USER, course: "2ph1", deleted: false }),
+    row("pc3", { userId: USER, course: "2deu1", deleted: false }),
+  ],
   subjects: [
     row("s1", { userId: USER, name: "Mathematics", color: "#3E6B4F", deleted: false }),
     row("s2", { userId: USER, name: "Physics", color: "#38618C", deleted: false }),
@@ -68,19 +62,14 @@ const TABLES = {
 const sent = [];
 globalThis.fetch = async (url, options = {}) => {
   const u = String(url);
-  if (u.includes("/collections/snapshots/documents?")) {
-    return { status: 200, ok: true, json: async () => ({ documents: [{ userId: USER }, { userId: USER }] }) };
-  }
-  const doc = u.match(/\/documents\/([0-9a-f]{32})$/);
-  if (doc && options.method !== "POST") {
-    for (const [key, payload] of Object.entries(SNAPSHOTS)) {
-      if (doc[1] === docId(key)) return { status: 200, ok: true, json: async () => ({ data: JSON.stringify(payload) }) };
-    }
-    return { status: 404, ok: false, statusText: "not_found" };
-  }
   const table = u.match(/\/tablesdb\/([^/]+)\/tables\/([^/]+)\/rows/);
   if (table) {
-    return { status: 200, ok: true, json: async () => ({ total: TABLES[table[2]].length, rows: TABLES[table[2]] }) };
+    // user discovery lists unfiltered; user reads filter by userId
+    const rows = TABLES[table[2]] ?? [];
+    if (u.includes("11111111-2222-3333-4444-555555555555")) {
+      return { status: 200, ok: true, json: async () => ({ total: rows.length, rows }) };
+    }
+    return { status: 200, ok: true, json: async () => ({ total: rows.length, rows }) };
   }
   if (u.endsWith("/messaging/messages/push")) {
     sent.push(JSON.parse(options.body));

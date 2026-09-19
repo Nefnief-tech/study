@@ -36,6 +36,13 @@ interface StudyRoomState {
   replaceChat: (
     messages: Array<{ role: string; content: string; sources?: string[] }>,
   ) => void;
+  /** row-level sync ops */
+  upsertChatMessage: (message: ChatMessage) => void;
+  removeChatMessage: (id: string) => void;
+  upsertCard: (deckId: string, card: Deck["cards"][number]) => void;
+  removeCard: (deckId: string, cardId: string) => void;
+  upsertSelection: (docId: string) => void;
+  removeSelection: (docId: string) => void;
 }
 
 export const useStudyRoomStore = create<StudyRoomState>()(
@@ -81,12 +88,19 @@ export const useStudyRoomStore = create<StudyRoomState>()(
         })),
 
       chat: [],
-      appendMessage: (message) => set((s) => ({ chat: [...s.chat, message] })),
+      appendMessage: (message) =>
+        set((s) => ({
+          chat: [
+            ...s.chat,
+            { sentAt: Date.now(), ...message, id: message.id ?? uid() },
+          ],
+        })),
       updateLastAssistant: (content, sources) =>
         set((s) => {
           if (s.chat.length === 0 || s.chat[s.chat.length - 1].role !== "assistant") return s;
           const chat = s.chat.slice(0, -1);
-          chat.push({ role: "assistant", content, sources });
+          const last = s.chat[s.chat.length - 1];
+          chat.push({ role: "assistant", content, sources, id: last.id, sentAt: last.sentAt });
           return { chat };
         }),
       clearChat: () => set({ chat: [] }),
@@ -98,15 +112,52 @@ export const useStudyRoomStore = create<StudyRoomState>()(
             sources: m.sources,
           })),
         })),
+      upsertChatMessage: (message) =>
+        set((s) => ({
+          chat: [...s.chat.filter((m) => m.id !== message.id), message],
+        })),
+      removeChatMessage: (id) =>
+        set((s) => ({ chat: s.chat.filter((m) => m.id !== id) })),
+      upsertCard: (deckId, card) =>
+        set((s) => ({
+          decks: s.decks.map((d) =>
+            d.id === deckId
+              ? { ...d, cards: [...d.cards.filter((c) => c.id !== card.id), card] }
+              : d,
+          ),
+        })),
+      removeCard: (deckId, cardId) =>
+        set((s) => ({
+          decks: s.decks.map((d) =>
+            d.id === deckId ? { ...d, cards: d.cards.filter((c) => c.id !== cardId) } : d,
+          ),
+        })),
+      upsertSelection: (docId) =>
+        set((s) => ({
+          selectedDocIds: s.selectedDocIds.includes(docId)
+            ? s.selectedDocIds
+            : [...s.selectedDocIds, docId],
+        })),
+      removeSelection: (docId) =>
+        set((s) => ({ selectedDocIds: s.selectedDocIds.filter((x) => x !== docId) })),
     }),
     {
       name: "semester.studyroom",
-      version: 2,
-      migrate: (state) =>
-        ({
-          ...(state as Partial<StudyRoomState>),
-          deletedDeckIds: [],
-        }) as StudyRoomState,
+      version: 3,
+      migrate: (state) => {
+        const v = state as Partial<StudyRoomState> & { chat?: Array<{ id?: string; sentAt?: number }> };
+        // chat messages synced as rows need an id + timestamp
+        const chat = (v.chat ?? []).map((m, i) => ({
+          ...m,
+          id: m.id ?? uid(),
+          sentAt: m.sentAt ?? Date.now() - (v.chat!.length - i) * 1000,
+        }));
+        return {
+          ...(v as Partial<StudyRoomState>),
+          deletedDeckIds: v.deletedDeckIds ?? [],
+          chat,
+        } as StudyRoomState;
+      },
       partialize: (s) => ({
         selectedDocIds: s.selectedDocIds,
         decks: s.decks,

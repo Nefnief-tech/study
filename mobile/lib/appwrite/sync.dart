@@ -5,151 +5,39 @@ import 'package:flutter/foundation.dart';
 
 import 'package:appwrite/appwrite.dart';
 import 'package:crypto/crypto.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/types.dart';
 import '../stores/auth_store.dart';
+import '../stores/portal_store.dart';
 import '../stores/registry.dart';
 import '../stores/studyroom_store.dart';
+import '../stores/timetable_store.dart';
+import '../utils/utils.dart';
 import 'client.dart';
 
-/// Sync model: **the cloud is the source of truth on page load.**
+/// Sync model — one structured layer:
 ///
-///  - On signed-in load, every store is replaced by its cloud snapshot
-///    ("load from the db first").
-///  - Afterwards each local change marks the store dirty and is pushed
-///    (debounced) — "write afterwards".
-///  - The only exception: local edits that never made it up (offline push
-///    failure) keep their dirty flag and win over the cloud on the next load,
-///    so offline work is never silently clobbered.
+/// EVERYTHING syncs as rows in Appwrite tables (subjects · todos · homeworks ·
+/// grades · events · timetable_entries · chat_messages · decks · flashcards ·
+/// study_selection · portal_entries · portal_courses). One row per entity,
+/// rowId = the entity id (or a content hash for id-less entities):
 ///
-/// Layout: subjects/todos/homework/grades/events/timetable + the study-room
-/// selection live as one snapshot document per store in `snapshots`; chats
-/// live in `chats` (one doc per user) and decks in `decks` (one doc per deck).
-/// All are per-user documents; permissions restrict them to their owner.
-/// Identical document IDs and payloads as the web app's `src/lib/auth/sync.ts`.
+///   push  = diff the local store against the last-synced row digests and
+///           upsert changed rows / soft-delete (deleted=true) removed rows
+///   pull  = fetch all rows of the user and merge — rows with pending local
+///           edits win, remote rows otherwise, deleted rows remove locally
+///   realtime = single-row events through the same merge
+///
+/// A device can therefore never wipe data it hasn't seen: with no local
+/// entities and no stored digests the push phase has nothing to do, so a
+/// fresh device's first sync is a pure pull.
 
 const PUSH_DEBOUNCE_MS = 1200;
 const MAX_CHAT_MESSAGES = 120;
 
-Future<String> snapshotDocId(
-  String userId,
-  String collection,
-  String key,
-) async {
-  final digest = sha256.convert(utf8.encode('$userId:$collection:$key'));
-  return digest.toString().substring(0, 32);
-}
-
-class _KeyOps {
-  final String key;
-  final String? collection; // null → snapshots
-  final Map<String, dynamic> Function() read;
-  final void Function(Map<String, dynamic> doc) apply;
-  final bool Function() isEmpty;
-  final bool omitKey;
-
-  const _KeyOps({
-    required this.key,
-    this.collection,
-    required this.read,
-    required this.apply,
-    required this.isEmpty,
-    this.omitKey = false,
-  });
-}
-
 StudyroomStore get _room => Stores.I.studyroom;
-
-Map<String, dynamic> _listPayload(
-  String field,
-  List<Map<String, dynamic>> items,
-) => {
-  'data': jsonEncode({field: items}),
-};
-
-List<Map<String, dynamic>> _listFromDoc(
-  Map<String, dynamic> doc,
-  String field,
-) {
-  try {
-    final data = jsonDecode((doc['data'] as String?) ?? '{}');
-    if (data is Map && data[field] is List) {
-      return (data[field] as List)
-          .whereType<Map>()
-          .map((e) => Map<String, dynamic>.from(e))
-          .toList();
-    }
-  } catch (_) {}
-  return [];
-}
-
-final _keys = <String, _KeyOps>{
-  'timetable': _KeyOps(
-    key: 'timetable',
-    read: () => _listPayload(
-      'entries',
-      Stores.I.timetable.entries.map((e) => e.toJson()).toList(),
-    ),
-    apply: (doc) => Stores.I.timetable.replaceEntries(
-      _listFromDoc(doc, 'entries').map(TimetableEntry.fromJson).toList(),
-    ),
-    isEmpty: () => Stores.I.timetable.entries.isEmpty,
-  ),
-  'studyroom': _KeyOps(
-    key: 'studyroom',
-    read: () => {
-      'data': jsonEncode({
-        'selectedDocIds': _room.selectedDocIds,
-        'deckIds': _room.decks.map((d) => d.id).toList(),
-      }),
-    },
-    apply: (doc) {
-      Object? parsed;
-      try {
-        parsed = jsonDecode((doc['data'] as String?) ?? '{}');
-      } catch (_) {}
-      final map = parsed is Map ? parsed : <String, dynamic>{};
-      appliedDeckIds = ((map['deckIds'] as List?) ?? [])
-          .map((e) => e as String)
-          .toList();
-      _room.replaceSelectedDocIds(
-        ((map['selectedDocIds'] as List?) ?? [])
-            .map((e) => e as String)
-            .toList(),
-      );
-    },
-    isEmpty: () => false,
-  ),
-  'chats': _KeyOps(
-    key: 'chats',
-    collection: kChatsCollectionId,
-    omitKey: true,
-    read: () => {
-      'messages': jsonEncode(
-        _room.chat.take(MAX_CHAT_MESSAGES).map((m) => m.toJson()).toList(),
-      ),
-    },
-    apply: (doc) {
-      List<dynamic> list = const [];
-      try {
-        list =
-            (jsonDecode((doc['messages'] as String?) ?? '[]') as List? ?? []);
-      } catch (_) {}
-      _room.replaceChat(
-        list
-            .whereType<Map>()
-            .map((e) => ChatMessage.fromJson(Map<String, dynamic>.from(e)))
-            .toList(),
-      );
-    },
-    isEmpty: () => _room.chat.isEmpty,
-  ),
-};
-
-String _collectionFor(String key) =>
-    _keys[key]!.collection ?? kSnapshotsCollectionId;
+PortalStore get _portal => Stores.I.portal;
 
 /* ---------------- structured row collections ----------------
  * subjects/todos/homeworks/grades/events live as one row per entity in
@@ -163,6 +51,13 @@ const _rowTables = {
   'homework': 'homeworks',
   'grades': 'grades',
   'events': 'events',
+  'timetable': 'timetable_entries',
+  'chat': 'chat_messages',
+  'decks': 'decks',
+  'flashcards': 'flashcards',
+  'selection': 'study_selection',
+  'portalEntries': 'portal_entries',
+  'portalCourses': 'portal_courses',
 };
 
 String _rowDigestOf(Map<String, dynamic> row) {
@@ -339,6 +234,194 @@ final _rowAdapters = <_RowAdapter>[
     upsert: (e) => Stores.I.events.upsertOne(e),
     remove: (id) => Stores.I.events.removeOne(id),
   ),
+  _RowAdapter(
+    storeKey: 'timetable',
+    table: 'timetable_entries',
+    // entries have no natural id — the row id is the content hash
+    list: () => Stores.I.timetable.entries
+        .map((e) => {...e.toJson(), 'id': timetableRowId(e)})
+        .toList(),
+    idOf: (e) => e['id'] as String,
+    toRow: (e) => {
+      'day': e['day'],
+      'period': e['period'],
+      'time': e['time'] ?? '',
+      'subject': e['subject'],
+      'teacher': e['teacher'] ?? '',
+      'room': e['room'] ?? '',
+    },
+    fromRow: (id, row) => TimetableEntry(
+      day: (row['day'] as String?) ?? 'Mon',
+      period: (row['period'] as num?)?.toInt() ?? 1,
+      time: (row['time'] as String?)?.isEmpty == false ? row['time'] as String : null,
+      subject: (row['subject'] as String?) ?? '',
+      teacher: (row['teacher'] as String?)?.isEmpty == false ? row['teacher'] as String : null,
+      room: (row['room'] as String?)?.isEmpty == false ? row['room'] as String : null,
+    ),
+    upsert: (e) => Stores.I.timetable.upsertEntry(
+      TimetableEntry.fromJson(Map<String, dynamic>.from(e as Map)),
+    ),
+    remove: (id) => Stores.I.timetable.removeEntry(id),
+  ),
+  _RowAdapter(
+    storeKey: 'chat',
+    table: 'chat_messages',
+    list: () => _room.chat
+        .where((m) => m.id != null)
+        .take(MAX_CHAT_MESSAGES)
+        .map((m) => {...m.toJson(), 'id': m.id!})
+        .toList(),
+    idOf: (m) => m['id'] as String,
+    toRow: (m) => {
+      'role': m['role'],
+      'content': m['content'],
+      'sources': jsonEncode(m['sources'] ?? <String>[]),
+      'sentAt': m['sentAt'] ?? 0,
+    },
+    fromRow: (id, row) {
+      final sourcesJson = row['sources'] as String?;
+      final sources = sourcesJson == null
+          ? null
+          : ((jsonDecode(sourcesJson) as List?) ?? []).whereType<String>().toList();
+      return ChatMessage(
+        id: id,
+        role: (row['role'] as String?) == 'user' ? 'user' : 'assistant',
+        content: (row['content'] as String?) ?? '',
+        sources: sources,
+        sentAt: (row['sentAt'] as num?)?.toInt(),
+      );
+    },
+    upsert: (m) => _room.upsertChatMessage(
+      ChatMessage.fromJson(Map<String, dynamic>.from(m)),
+    ),
+    remove: (id) => _room.removeChatMessage(id),
+  ),
+  _RowAdapter(
+    storeKey: 'decks',
+    table: 'decks',
+    list: () => _room.decks,
+    idOf: (d) => d.id,
+    toRow: (d) => {
+      'title': d.title,
+      'documentIds': jsonEncode(d.documentIds),
+      'createdAt': d.createdAt,
+      'updatedAt': d.updatedAt,
+    },
+    fromRow: (id, row) => Deck(
+      id: id,
+      title: (row['title'] as String?) ?? 'Deck',
+      documentIds: ((jsonDecode((row['documentIds'] as String?) ?? '[]') as List?) ?? [])
+          .whereType<String>()
+          .toList(),
+      createdAt: (row['createdAt'] as num?)?.toInt() ?? 0,
+      updatedAt: (row['updatedAt'] as num?)?.toInt() ?? 0,
+      cards: const [],
+    ),
+    upsert: (d) {
+      // rows carry no cards — keep the locally known ones when merging
+      final existing = _room.decks.where((x) => x.id == (d as Deck).id).firstOrNull;
+      _room.upsertDeck(existing == null ? d : d.withCards(existing.cards));
+    },
+    remove: (id) => _room.removeDeckSilently(id),
+  ),
+  _RowAdapter(
+    storeKey: 'flashcards',
+    table: 'flashcards',
+    list: () => _room.decks
+        .expand((d) => d.cards.map((c) => {...c.toJson(), 'deckId': d.id}))
+        .toList(),
+    idOf: (c) => c['id'] as String,
+    toRow: (c) => {'deckId': c['deckId'], 'front': c['front'], 'back': c['back'] ?? ''},
+    fromRow: (id, row) => Flashcard(
+      id: id,
+      front: (row['front'] as String?) ?? '',
+      back: (row['back'] as String?) ?? '',
+    ),
+    upsert: (c) {
+      final map = Map<String, dynamic>.from(c as Map);
+      // a card can arrive before its deck row — keep it attachable
+      if (!_room.decks.any((d) => d.id == map['deckId'])) {
+        _room.upsertDeck(Deck(
+          id: map['deckId'] as String,
+          title: 'Deck',
+          documentIds: const [],
+          createdAt: DateTime.now().millisecondsSinceEpoch,
+          updatedAt: DateTime.now().millisecondsSinceEpoch,
+          cards: const [],
+        ));
+      }
+      _room.upsertCard(
+        map['deckId'] as String,
+        Flashcard(id: map['id'] as String, front: map['front'] as String, back: map['back'] as String),
+      );
+    },
+    remove: (id) {
+      final deck = _room.decks.where((d) => d.cards.any((c) => c.id == id)).firstOrNull;
+      if (deck != null) _room.removeCard(deck.id, id);
+    },
+  ),
+  _RowAdapter(
+    storeKey: 'selection',
+    table: 'study_selection',
+    list: () => _room.selectedDocIds
+        .map((d) => {'id': hashId('sel|$d'), 'documentId': d})
+        .toList(),
+    idOf: (s) => s['id'] as String,
+    toRow: (s) => {'documentId': s['documentId']},
+    fromRow: (id, row) => {'documentId': (row['documentId'] as String?) ?? ''},
+    upsert: (s) => _room.upsertSelection(s['documentId'] as String),
+    remove: (id) {
+      final docId = _room.selectedDocIds.where((d) => hashId('sel|$d') == id).firstOrNull;
+      if (docId != null) _room.removeSelection(docId);
+    },
+  ),
+  _RowAdapter(
+    storeKey: 'portalEntries',
+    table: 'portal_entries',
+    list: () => (_portal.data?.days ?? const <PortalDay>[])
+        .expand((day) => day.entries.map((e) => {...e.toJson(), 'id': portalSubRowId(e)}))
+        .toList(),
+    idOf: (e) => e['id'] as String,
+    toRow: (e) => {
+      'date': e['date'],
+      'weekday': e['weekday'] ?? '',
+      'period': e['period'] ?? '',
+      'course': e['course'] ?? '',
+      'courseOld': e['courseOld'] ?? '',
+      'substitute': e['substitute'] ?? '',
+      'room': e['room'] ?? '',
+      'info': e['info'] ?? '',
+      'cancelled': e['cancelled'] ?? false,
+    },
+    fromRow: (id, row) => PortalSub(
+      date: (row['date'] as String?) ?? '',
+      weekday: (row['weekday'] as String?) ?? '',
+      period: (row['period'] as String?) ?? '',
+      course: (row['course'] as String?) ?? '',
+      courseOld: (row['courseOld'] as String?)?.isEmpty == false ? row['courseOld'] as String : null,
+      substitute: (row['substitute'] as String?) ?? '',
+      room: (row['room'] as String?) ?? '',
+      info: (row['info'] as String?) ?? '',
+      cancelled: row['cancelled'] == true,
+    ),
+    upsert: (e) => _portal.upsertSub(PortalSub.fromJson(Map<String, dynamic>.from(e as Map))),
+    remove: (id) => _portal.removeSub(id),
+  ),
+  _RowAdapter(
+    storeKey: 'portalCourses',
+    table: 'portal_courses',
+    list: () => (_portal.data?.courses ?? const <String>[])
+        .map((c) => {'id': portalCourseRowId(c), 'course': c})
+        .toList(),
+    idOf: (c) => c['id'] as String,
+    toRow: (c) => {'course': c['course']},
+    fromRow: (id, row) => {'course': (row['course'] as String?) ?? ''},
+    upsert: (c) => _portal.upsertCourse(c['course'] as String),
+    remove: (id) {
+      final course = _portal.data?.courses.where((c) => portalCourseRowId(c) == id).firstOrNull;
+      if (course != null) _portal.removeCourse(id);
+    },
+  ),
 ];
 
 final rowPushTimers = <String, Timer>{};
@@ -461,352 +544,6 @@ Future<void> syncRowStore(AuthUser user, String storeKey) async {
 /// writes don't schedule pushes back to the cloud
 bool applyingRemote = false;
 bool subscribed = false;
-List<String>? appliedDeckIds;
-
-/// our own document writes, by Appwrite document id → the updatedAt we wrote;
-/// realtime events with the same stamp are our own echoes, not remote changes
-final _lastPushedAt = <String, int>{};
-RealtimeSubscription? _realtimeSub;
-
-/* ---------------- raw REST document calls ----------------
- * The Dart SDK's typed Document parser crashes on our collections (the new
- * API returns the row under a `data` key while our schema also has a string
- * attribute named `data` — "type 'String' is not a subtype of type
- * 'Map<String, dynamic>'"). The web SDK is dynamically typed and unaffected.
- * These calls mirror the digest function: plain REST + Appwrite JWT. */
-
-Future<Map<String, String>> _restHeaders() async {
-  final jwt = await getJwt();
-  return {
-    'X-Appwrite-Project': kAppwriteProjectId,
-    if (jwt != null) 'X-Appwrite-JWT': jwt,
-    'content-type': 'application/json',
-  };
-}
-
-Uri _docUri(String collection, String docId) => Uri.parse(
-  '$kAppwriteEndpoint/databases/$kDatabaseId/collections/$collection/documents/$docId',
-);
-
-/// GET a document → flat attribute map; null when it does not exist
-Future<Map<String, dynamic>?> restGetDocument(
-  String collection,
-  String docId,
-) async {
-  final res = await http
-      .get(_docUri(collection, docId), headers: await _restHeaders())
-      .timeout(const Duration(seconds: 20));
-  if (res.statusCode == 404) return null;
-  if (res.statusCode != 200) {
-    throw Exception('get $collection/$docId → ${res.statusCode}: ${res.body}');
-  }
-  return jsonDecode(res.body) as Map<String, dynamic>;
-}
-
-/// PATCH the document; creates it (owner-only permissions) when missing
-Future<void> restUpsertDocument(
-  String collection,
-  String docId,
-  Map<String, dynamic> attributes,
-  String userId,
-) async {
-  final headers = await _restHeaders();
-  var res = await http
-      .patch(
-        _docUri(collection, docId),
-        headers: headers,
-        body: jsonEncode({'data': attributes}),
-      )
-      .timeout(const Duration(seconds: 20));
-  if (res.statusCode == 404) {
-    final createUri = Uri.parse(
-      '$kAppwriteEndpoint/databases/$kDatabaseId/collections/$collection/documents',
-    );
-    res = await http
-        .post(
-          createUri,
-          headers: headers,
-          body: jsonEncode({
-            'documentId': docId,
-            'data': attributes,
-            'permissions': ['read("user:$userId")', 'write("user:$userId")'],
-          }),
-        )
-        .timeout(const Duration(seconds: 20));
-  }
-  if (res.statusCode >= 400) {
-    throw Exception(
-      'upsert $collection/$docId → ${res.statusCode}: ${res.body}',
-    );
-  }
-}
-
-Future<void> restDeleteDocument(String collection, String docId) async {
-  await http
-      .delete(_docUri(collection, docId), headers: await _restHeaders())
-      .timeout(const Duration(seconds: 20)); // 404 is fine — already gone
-}
-
-Future<void> _upsertDocument(
-  String collection,
-  String docId,
-  Map<String, dynamic> payload,
-  String userId,
-) async {
-  await restUpsertDocument(
-    collection,
-    docId,
-    payload['data'] as Map<String, dynamic>,
-    userId,
-  );
-}
-
-/// best-effort "was this an offline failure?" — the change stays dirty either
-/// way and is retried on the next sync; this only suppresses the error banner
-bool _isOfflineError(Object e) {
-  final s = e.toString();
-  return s.contains('SocketException') ||
-      s.contains('Failed host lookup') ||
-      s.contains('Connection refused') ||
-      s.contains('Network is unreachable') ||
-      s.contains('Connection closed');
-}
-
-/// store keys where an empty local list must never overwrite non-empty cloud
-/// data — protects against wiping the cloud from a device that never loaded
-/// it (fresh install, offline reconcile, cleared storage). studyroom/chats
-/// are exempt: clearing the chat or the selection is a legitimate empty sync.
-const _guardedKeys = {
-  'subjects',
-  'todos',
-  'homework',
-  'grades',
-  'events',
-  'timetable',
-};
-
-/// true when [payload] holds an empty list while the cloud document still has
-/// items — pushing it would destroy cloud data
-Future<bool> _wouldWipeRemote(
-  AuthUser user,
-  String key,
-  Map<String, dynamic> attributes,
-) async {
-  final localData = attributes['data'];
-  if (localData is! String) return false;
-  Object? local;
-  try {
-    local = jsonDecode(localData);
-  } catch (_) {
-    return false;
-  }
-  if (local is! Map || local.values.any((v) => v is! List || v.isNotEmpty))
-    return false;
-
-  try {
-    final docId = await snapshotDocId(user.id, _collectionFor(key), key);
-    final doc = await restGetDocument(_collectionFor(key), docId);
-    if (doc == null) return false;
-    final remoteRaw = doc['data'];
-    if (remoteRaw is! String) return false;
-    final remote = jsonDecode(remoteRaw);
-    if (remote is! Map) return false;
-    return remote.values.any((v) => v is List && v.isNotEmpty);
-  } catch (_) {
-    return false; // remote unreadable → don't block the push
-  }
-}
-
-Future<void> _pushSnapshot(AuthUser user, String key) async {
-  final ops = _keys[key]!;
-  final auth = Stores.I.auth;
-  auth.setSyncing(true);
-  try {
-    final docId = await snapshotDocId(user.id, _collectionFor(key), key);
-    // new Appwrite API: `data` is the attributes object (was: a JSON string
-    // per attribute — the old flat shape now fails with "Unknown attribute")
-    final updatedAt = DateTime.now().millisecondsSinceEpoch;
-    final attributes = <String, dynamic>{
-      'userId': user.id,
-      ...ops.read(),
-      'updatedAt': updatedAt,
-    };
-    if (!ops.omitKey) attributes['key'] = key;
-    final payload = {'data': attributes};
-
-    // baseline rule: a device that has never observed this store's cloud state
-    // (fresh install, reconcile failed offline) must not push — it could wipe
-    // data it has never seen. Dirty stays; the next reconcile sets the baseline
-    // and this change is re-evaluated against the loaded cloud state.
-    if (_guardedKeys.contains(key) && !Stores.I.syncMeta.isLoaded(key)) {
-      auth.setSyncing(false);
-      return;
-    }
-
-    if (_guardedKeys.contains(key) &&
-        await _wouldWipeRemote(user, key, attributes)) {
-      // keep the cloud copy; clear the dirty flag so we don't retry forever —
-      // the next reconcile will pull the cloud state back onto this device
-      Stores.I.syncMeta.clearDirty(key);
-      _scheduledAt.remove(key);
-      auth.setSyncing(false);
-      return;
-    }
-
-    await _upsertDocument(_collectionFor(key), docId, payload, user.id);
-    _lastPushedAt[docId] = updatedAt; // own echo — ignore in realtime
-    Stores.I.syncMeta.clearDirty(key);
-    auth.setSynced(DateTime.now().millisecondsSinceEpoch);
-  } catch (e) {
-    // offline: the change stays dirty and uploads on the next sync
-    auth.setSyncing(false);
-    if (_isOfflineError(e)) return;
-    auth.setSyncError(e.toString());
-  }
-}
-
-/* ---------------- decks (one document per deck, fetched by id) ---------------- */
-
-Deck _docToDeck(Map<String, dynamic> doc) => Deck(
-  id: '${doc['deckId']}',
-  title: (doc['title'] as String?) ?? 'Deck',
-  documentIds: _decodeStringList(doc['documentIds'] as String?),
-  createdAt: (doc['createdAt'] as num?)?.toInt() ?? 0,
-  updatedAt: (doc['updatedAt'] as num?)?.toInt() ?? 0,
-  cards: _decodeCards(doc['cards'] as String?),
-);
-
-List<String> _decodeStringList(String? json) {
-  try {
-    return ((jsonDecode(json ?? '[]') as List?) ?? [])
-        .map((e) => e as String)
-        .toList();
-  } catch (_) {
-    return [];
-  }
-}
-
-List<Flashcard> _decodeCards(String? json) {
-  try {
-    return ((jsonDecode(json ?? '[]') as List?) ?? [])
-        .whereType<Map>()
-        .map((e) => Flashcard.fromJson(Map<String, dynamic>.from(e)))
-        .toList();
-  } catch (_) {
-    return [];
-  }
-}
-
-Future<Deck?> _getDeckDoc(AuthUser user, String deckId) async {
-  try {
-    final docId = await snapshotDocId(user.id, kDecksCollectionId, deckId);
-    final doc = await restGetDocument(kDecksCollectionId, docId);
-    return doc == null ? null : _docToDeck(doc);
-  } catch (_) {
-    return null;
-  }
-}
-
-Future<void> _pushDeck(AuthUser user, Deck deck) async {
-  final docId = await snapshotDocId(user.id, kDecksCollectionId, deck.id);
-  final updatedAt = DateTime.now().millisecondsSinceEpoch;
-  await _upsertDocument(kDecksCollectionId, docId, {
-    'data': {
-      'userId': user.id,
-      'deckId': deck.id,
-      'title': deck.title,
-      'documentIds': jsonEncode(deck.documentIds),
-      'cards': jsonEncode(deck.cards.map((c) => c.toJson()).toList()),
-      'createdAt': deck.createdAt,
-      'updatedAt': updatedAt,
-    },
-  }, user.id);
-  _lastPushedAt[docId] = updatedAt; // own echo — ignore in realtime
-}
-
-Future<void> _syncDecks(AuthUser user) async {
-  final auth = Stores.I.auth;
-  auth.setSyncing(true);
-  try {
-    final room = _room;
-    final local = room.decks;
-
-    // 1. deletions recorded while offline/pending → apply them in the cloud
-    final deletedIds = [...room.deletedDeckIds];
-    for (final id in deletedIds) {
-      final docId = await snapshotDocId(user.id, kDecksCollectionId, id);
-      try {
-        await restDeleteDocument(kDecksCollectionId, docId);
-      } catch (_) {
-        // already gone
-      }
-    }
-    if (deletedIds.isNotEmpty) room.clearDeletedDeckIds(deletedIds);
-
-    // 2. push every local deck (few, small — upsert)
-    for (final deck in local) {
-      await _pushDeck(user, deck);
-    }
-
-    // 3. restore decks that the snapshot lists but this device doesn't have
-    //    (fresh device / cleared storage). Decks deleted on another device are
-    //    already gone from the cloud, so nothing is resurrected.
-    for (final id in appliedDeckIds ?? const <String>[]) {
-      if (local.any((d) => d.id == id) || deletedIds.contains(id)) continue;
-      final remoteDeck = await _getDeckDoc(user, id);
-      if (remoteDeck != null) {
-        room.upsertDeck(remoteDeck);
-      }
-    }
-    auth.setSynced(DateTime.now().millisecondsSinceEpoch);
-  } catch (e) {
-    auth.setSyncing(false);
-    if (_isOfflineError(e)) return; // queued — pushes retry when back online
-    auth.setSyncError(e.toString());
-  }
-}
-
-/* ---------------- debounce drain ---------------- */
-
-/// store key → moment the debounced push fires
-final _scheduledAt = <String, DateTime>{};
-Timer? _drainTimer;
-
-void _ensureDrainLoop() {
-  if (_drainTimer != null) return;
-  _drainTimer = Timer.periodic(const Duration(milliseconds: 300), (_) {
-    if (applyingRemote) return;
-    final auth = Stores.I.auth;
-    final user = auth.user;
-    if (auth.status != SyncStatus.signedIn || user == null) return;
-    final now = DateTime.now();
-    final due = <String>[];
-    _scheduledAt.removeWhere((key, at) {
-      if (now.isBefore(at)) return false;
-      due.add(key);
-      return true;
-    });
-    for (final key in due) {
-      if (key == 'decks') {
-        _syncDecks(user);
-      } else if (_keys.containsKey(key)) {
-        _pushSnapshot(user, key);
-      }
-    }
-  });
-}
-
-void _schedule(String key) {
-  if (applyingRemote) return;
-  final auth = Stores.I.auth;
-  if (auth.status != SyncStatus.signedIn || auth.user == null) return;
-  Stores.I.syncMeta.markDirty(key, DateTime.now().millisecondsSinceEpoch);
-  _scheduledAt[key] = DateTime.now().add(
-    const Duration(milliseconds: PUSH_DEBOUNCE_MS),
-  );
-}
-
-void _scheduleDecks() => _schedule('decks');
 
 /* ---------------- init / auth actions ---------------- */
 
@@ -814,63 +551,25 @@ void _subscribeStores() {
   if (subscribed) return;
   subscribed = true;
 
-  // structured rows
-  Stores.I.subjects.addListener(() => scheduleRowSync('subjects'));
-  Stores.I.todos.addListener(() => scheduleRowSync('todos'));
-  Stores.I.homework.addListener(() => scheduleRowSync('homework'));
-  Stores.I.grades.addListener(() => scheduleRowSync('grades'));
-  Stores.I.events.addListener(() => scheduleRowSync('events'));
-
-  // blobs
-  Stores.I.timetable.addListener(() => _schedule('timetable'));
-  _room.addListener(() => _schedule('studyroom'));
-  // decks live in the study-room store too, but sync as their own documents
-  _room.addListener(_scheduleDecks);
-  _ensureDrainLoop();
-}
-
-/// observes one key's cloud state and reconciles it — returns true when the
-/// cloud was actually observed (false = network failure, retry worthwhile)
-Future<bool> _observeAndReconcileKey(AuthUser user, String key) async {
-  final ops = _keys[key]!;
-  Map<String, dynamic>? remote;
-  var observedCloud = false; // 404 (empty cloud) counts as observed
-  try {
-    final docId = await snapshotDocId(user.id, _collectionFor(key), key);
-    remote = await restGetDocument(_collectionFor(key), docId);
-    observedCloud = true;
-  } on AppwriteException catch (e) {
-    remote = null;
-    observedCloud = e.code == 404;
-    if (e.code != 404)
-      debugPrint(
-        '[sync] observe $key failed: ${e.type} ${e.code} ${e.message}',
-      );
-  } catch (e) {
-    remote = null;
-    observedCloud = false; // offline etc. — cloud state unknown
-    debugPrint('[sync] observe $key failed: $e');
+  final entityStores = {
+    'subjects': Stores.I.subjects,
+    'todos': Stores.I.todos,
+    'homework': Stores.I.homework,
+    'grades': Stores.I.grades,
+    'events': Stores.I.events,
+  };
+  for (final adapter in _rowAdapters) {
+    final key = adapter.storeKey;
+    if (entityStores[key] != null) {
+      entityStores[key]!.addListener(() => scheduleRowSync(key));
+    } else if (key == 'timetable') {
+      Stores.I.timetable.addListener(() => scheduleRowSync(key));
+    } else if (key == 'chat' || key == 'decks' || key == 'flashcards' || key == 'selection') {
+      _room.addListener(() => scheduleRowSync(key));
+    } else if (key == 'portalEntries' || key == 'portalCourses') {
+      _portal.addListener(() => scheduleRowSync(key));
+    }
   }
-  if (observedCloud) Stores.I.syncMeta.markLoaded(key);
-  debugPrint(
-    '[sync] observe $key → observed:$observedCloud remote:${remote != null}',
-  );
-
-  // …unless this device holds local edits that never made it up
-  final dirtyAt = Stores.I.syncMeta.dirtyAt[key];
-  final remoteUpdatedAt = (remote?['updatedAt'] as num?)?.toInt() ?? 0;
-  final hasUnsyncedEdits =
-      dirtyAt != null && (remote == null || dirtyAt > remoteUpdatedAt);
-
-  if (remote != null && !hasUnsyncedEdits) {
-    ops.apply(remote);
-    Stores.I.syncMeta.clearDirty(key);
-    return true;
-  }
-  if (remote == null && ops.isEmpty()) return true;
-  // write afterwards: unsynced edits, or fresh local data with no snapshot yet
-  await _pushSnapshot(user, key);
-  return true;
 }
 
 /// serializes reconciles — startup, resume and "Sync now" must never race
@@ -905,44 +604,26 @@ Future<void> _runReconcile(AuthUser user) async {
   applyingRemote = true;
   final auth = Stores.I.auth;
   try {
-    // flaky networks kill individual requests — retry every key that wasn't
-    // observed until all stores are covered or the attempts run out
-    var remaining = _keys.keys.toList();
-    for (var attempt = 0; attempt < 3 && remaining.isNotEmpty; attempt++) {
-      if (attempt > 0) await Future.delayed(const Duration(milliseconds: 1500));
-      final failed = <String>[];
-      for (final key in remaining) {
-        if (!await _observeAndReconcileKey(user, key)) failed.add(key);
-      }
-      remaining = failed;
-    }
-
-    if (remaining.isNotEmpty) {
-      auth.setSyncError(
-        'sync incomplete — ${remaining.join(", ")} could not be loaded; check your connection and tap Sync now',
-      );
-      _scheduleRetryLoop();
-      return;
-    }
-
-    // structured rows: push local diffs, then pull + merge. On a fresh device
+    // every store: push local diffs, then pull + merge. On a fresh device
     // this is a pure pull — no local entities and no stored digests means the
     // push and deletion phases have nothing to do.
-    try {
-      for (final adapter in _rowAdapters) {
+    final failed = <String>[];
+    for (final adapter in _rowAdapters) {
+      try {
         await syncRowStore(user, adapter.storeKey);
+      } catch (e) {
+        failed.add(adapter.storeKey);
+        debugPrint('[sync] row store ${adapter.storeKey} failed: $e');
       }
-    } catch (e) {
-      debugPrint('[sync] row sync failed: $e');
+    }
+
+    if (failed.isNotEmpty) {
       auth.setSyncError(
-        'sync incomplete — structured data could not be loaded; check your connection and tap Sync now',
+        'sync incomplete — ${failed.join(", ")} could not be synced; check your connection and tap Sync now',
       );
       _scheduleRetryLoop();
       return;
     }
-
-    // decks reconcile: fresh device loads everything, otherwise merge per deck
-    await _syncDecks(user);
 
     auth.setSynced(DateTime.now().millisecondsSinceEpoch);
   } catch (e) {
@@ -1103,7 +784,6 @@ Future<void> signOut() async {
     await account.deleteSession(sessionId: 'current');
   } catch (_) {}
   _stopRealtime();
-  _lastPushedAt.clear();
   await _clearSessionSecret();
   final p2 = await SharedPreferences.getInstance();
   await p2.remove(_kUserIdKey);
@@ -1116,12 +796,11 @@ Future<void> signOut() async {
 
 /* ---------------- realtime (cross-device pulls) ---------------- */
 
+RealtimeSubscription? _realtimeSub;
+
 void _startRealtime(AuthUser user) {
   _stopRealtime();
   _realtimeSub = Realtime(appwriteClient).subscribe([
-    'databases.$kDatabaseId.collections.$kSnapshotsCollectionId.documents',
-    'databases.$kDatabaseId.collections.$kChatsCollectionId.documents',
-    'databases.$kDatabaseId.collections.$kDecksCollectionId.documents',
     for (final table in _rowTables.values)
       'databases.$kDatabaseId.tables.$table.rows',
   ]);
@@ -1162,39 +841,6 @@ void _onRealtimeEvent(RealtimeMessage msg) {
         return;
       }
     }
-    return;
-  }
-
-  // deletions only matter for decks (snapshots are upserted, never deleted)
-  if (msg.events.any((e) => e.endsWith('.delete'))) {
-    final deckId = doc['deckId'];
-    if (deckId is String && doc['userId'] == user.id) {
-      applyingRemote = true;
-      _room.removeDeckSilently(deckId);
-      applyingRemote = false;
-    }
-    return;
-  }
-
-  // ignore echoes of our own writes
-  final docId = doc[r'$id'] as String?;
-  final updatedAt = (doc['updatedAt'] as num?)?.toInt() ?? 0;
-  if (docId != null && _lastPushedAt[docId] == updatedAt) return;
-
-  applyingRemote = true;
-  try {
-    final key = doc['key'] as String?;
-    if (key != null && _keys.containsKey(key)) {
-      Stores.I.syncMeta.markLoaded(key); // the event IS the cloud state
-      _keys[key]!.apply(doc);
-    } else if (doc['deckId'] is String) {
-      _room.upsertDeck(_docToDeck(doc));
-    } else if (doc['messages'] is String) {
-      Stores.I.syncMeta.markLoaded('chats');
-      _keys['chats']!.apply(doc);
-    }
-  } finally {
-    applyingRemote = false;
   }
 }
 
@@ -1217,31 +863,4 @@ Future<void> syncNow() async {
   final user = auth.user;
   if (auth.status != SyncStatus.signedIn || user == null) return;
   await reconcile(user);
-}
-
-/// Mirrors the fetched substitute plan (plan ONLY — portal credentials never
-/// leave this device) into a `portal` snapshot document, so the daily-digest
-/// Appwrite function can respect cancellations and substitutions.
-Future<void> mirrorPortal(PortalPlan plan) async {
-  final auth = Stores.I.auth;
-  final user = auth.user;
-  if (auth.status != SyncStatus.signedIn || user == null) return;
-  try {
-    final docId = await snapshotDocId(
-      user.id,
-      kSnapshotsCollectionId,
-      'portal',
-    );
-    await _upsertDocument(kSnapshotsCollectionId, docId, {
-      'userId': user.id,
-      'key': 'portal',
-      'data': jsonEncode({
-        'days': plan.days.map((d) => d.toJson()).toList(),
-        'courses': plan.courses,
-      }),
-      'updatedAt': DateTime.now().millisecondsSinceEpoch,
-    }, user.id);
-  } catch (_) {
-    // mirroring is best-effort — the digest just falls back to plain classes
-  }
 }

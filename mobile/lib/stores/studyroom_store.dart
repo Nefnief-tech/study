@@ -155,7 +155,16 @@ class StudyroomStore extends PersistedStore {
   // -- chat --
 
   void appendMessage(ChatMessage message) {
-    _chat = [..._chat, message];
+    _chat = [
+      ..._chat,
+      ChatMessage(
+        role: message.role,
+        content: message.content,
+        sources: message.sources,
+        id: message.id ?? uid(),
+        sentAt: message.sentAt ?? DateTime.now().millisecondsSinceEpoch,
+      ),
+    ];
     notifyListeners();
     persist();
   }
@@ -163,10 +172,73 @@ class StudyroomStore extends PersistedStore {
   void updateLastAssistant(String content, [List<String>? sources]) {
     if (_chat.isEmpty || _chat.last.isUser) return;
     final chat = [..._chat];
-    chat[chat.length - 1] = ChatMessage(role: 'assistant', content: content, sources: sources);
+    final last = _chat.last;
+    chat[chat.length - 1] = ChatMessage(
+      role: 'assistant',
+      content: content,
+      sources: sources,
+      id: last.id,
+      sentAt: last.sentAt,
+    );
     _chat = chat;
     notifyListeners();
     persist();
+  }
+
+  /// row-level sync: insert or replace a chat message
+  void upsertChatMessage(ChatMessage message) {
+    if (message.id == null) return;
+    _chat = [..._chat.where((m) => m.id != message.id), message];
+    notifyListeners();
+    persist();
+  }
+
+  /// row-level sync: drop a chat message
+  void removeChatMessage(String id) {
+    _chat = _chat.where((m) => m.id != id).toList();
+    notifyListeners();
+    persist();
+  }
+
+  /// row-level sync: insert or replace a flashcard inside its deck
+  void upsertCard(String deckId, Flashcard card) {
+    _decks = [
+      for (final d in _decks)
+        if (d.id == deckId)
+          d.withCards([...d.cards.where((c) => c.id != card.id), card])
+        else
+          d,
+    ];
+    notifyListeners();
+    persist();
+  }
+
+  /// row-level sync: drop a flashcard from its deck
+  void removeCard(String deckId, String cardId) {
+    _decks = [
+      for (final d in _decks)
+        if (d.id == deckId) d.withCards(d.cards.where((c) => c.id != cardId).toList()) else d,
+    ];
+    notifyListeners();
+    persist();
+  }
+
+  /// row-level sync: select a study document
+  void upsertSelection(String docId) {
+    if (!_selectedDocIds.contains(docId)) {
+      _selectedDocIds = [..._selectedDocIds, docId];
+      notifyListeners();
+      persist();
+    }
+  }
+
+  /// row-level sync: deselect a study document
+  void removeSelection(String docId) {
+    if (_selectedDocIds.contains(docId)) {
+      _selectedDocIds = _selectedDocIds.where((x) => x != docId).toList();
+      notifyListeners();
+      persist();
+    }
   }
 
   void clearChat() {

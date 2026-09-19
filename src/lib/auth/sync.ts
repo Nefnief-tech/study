@@ -1,9 +1,6 @@
 import { ID } from "appwrite";
 import {
-  CHATS_COLLECTION_ID,
   DATABASE_ID,
-  DECKS_COLLECTION_ID,
-  SNAPSHOTS_COLLECTION_ID,
   account,
   appwriteClient,
   appwriteConfigured,
@@ -14,37 +11,41 @@ import {
 import { useAuthStore, useSyncMetaStore } from "@/lib/store/auth";
 import { useSubjectsStore } from "@/lib/store/subjects";
 import { useTodosStore } from "@/lib/store/todos";
-import { useGradesStore, normalizeGradeEntries } from "@/lib/store/grades";
+import { useGradesStore } from "@/lib/store/grades";
 import { useEventsStore } from "@/lib/store/events";
 import { useHomeworkStore } from "@/lib/store/homework";
-import { useTimetableStore } from "@/lib/store/timetable";
+import { useTimetableStore, timetableRowId } from "@/lib/store/timetable";
 import { useStudyRoomStore } from "@/lib/store/studyroom";
-import type { Deck, GradeEntry, Homework, StudyEvent, Subject, Todo } from "@/lib/types";
+import { usePortalStore, portalSubRowId, portalCourseRowId } from "@/lib/store/portal";
+import { hashId } from "@/lib/utils";
+import type {
+  Deck,
+  GradeEntry,
+  Homework,
+  StudyEvent,
+  Subject,
+  TimetableEntry,
+  Todo,
+} from "@/lib/types";
 import type { PortalSub } from "../server/portal";
 
-/** shape returned by /api/portal/fetch (see timetable page) */
-export interface PortalPlanJson {
-  days: Array<{ date: string; weekday: string; entries: PortalSub[] }>;
-  courses: string[];
-  stand: string | null;
-}
-
 /**
- * Sync model, two layers:
+ * Sync model — one structured layer:
  *
- * 1. ROW COLLECTIONS (subjects/todos/homeworks/grades/events — Appwrite
- *    tables, one row per entity, rowId = the entity UUID):
- *      push  = diff the local store against the last-synced row digests and
- *              upsert changed rows / soft-delete (deleted=true) removed rows
- *      pull  = fetch all rows of the user and merge — rows with pending local
- *              edits win, remote rows otherwise, deleted rows remove locally
- *      realtime = single-row events through the same merge
- *    A device can therefore never wipe data it hasn't seen: it only touches
- *    rows it actually changed.
+ * EVERYTHING syncs as rows in Appwrite tables (subjects · todos · homeworks ·
+ * grades · events · timetable_entries · chat_messages · decks · flashcards ·
+ * study_selection · portal_entries · portal_courses). One row per entity,
+ * rowId = the entity id (or a content hash for id-less entities):
  *
- * 2. BLOBS (timetable / studyroom / chats / decks / portal — wholesale-
- *    replaced by design): cloud-wins-on-load with the dirty-baseline rule,
- *    debounced push, exactly as before.
+ *   push  = diff the local store against the last-synced row digests and
+ *           upsert changed rows / soft-delete (deleted=true) removed rows
+ *   pull  = fetch all rows of the user and merge — rows with pending local
+ *           edits win, remote rows otherwise, deleted rows remove locally
+ *   realtime = single-row events through the same merge
+ *
+ * A device can therefore never wipe data it hasn't seen: with no local
+ * entities and no stored digests the push phase has nothing to do, so a
+ * fresh device's first sync is a pure pull.
  */
 
 const PUSH_DEBOUNCE_MS = 1200;
@@ -53,19 +54,8 @@ const MAX_CHAT_MESSAGES = 120;
 /** REST base for row calls (the Dart/JS SDK models are bypassed — see git) */
 const REST_BASE = "https://fra.cloud.appwrite.io/v1";
 
-async function snapshotDocId(userId: string, collection: string, key: string) {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(`${userId}:${collection}:${key}`),
-  );
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
-    .slice(0, 32);
-}
-
 /* ================================================================== */
-/* ROW COLLECTIONS                                                     */
+/* ROW STORES                                                          */
 /* ================================================================== */
 
 type RowData = Record<string, unknown>;
@@ -217,9 +207,225 @@ const ROW_STORES: Record<string, RowStoreDef> = {
         notes: str(row.notes) || undefined,
       }) as unknown as StudyEvent,
   },
+  timetable: {
+    table: "timetable_entries",
+    // entries have no natural id — the row id is the content hash
+    list: () =>
+      useTimetableStore.getState().entries.map((e) => ({
+        ...e,
+        id: timetableRowId(e),
+      })),
+    upsertOne: (e) => useTimetableStore.getState().upsertEntry(e as Todo extends never ? never : TimetableEntry),
+    removeOne: (id) => useTimetableStore.getState().removeEntry(id),
+    toRow: (e) => {
+      const entry = e as TimetableEntry;
+      return {
+        day: entry.day,
+        period: entry.period,
+        time: entry.time ?? "",
+        subject: entry.subject,
+        teacher: entry.teacher ?? "",
+        room: entry.room ?? "",
+        deleted: false,
+      };
+    },
+    fromRow: (row) =>
+      ({
+        day: str(row.day) || "Mon",
+        period: num(row.period) || 1,
+        time: str(row.time) || undefined,
+        subject: str(row.subject),
+        teacher: str(row.teacher) || undefined,
+        room: str(row.room) || undefined,
+      }) as unknown as TimetableEntry,
+  },
+  chat: {
+    table: "chat_messages",
+    list: () =>
+      useStudyRoomStore.getState().chat
+        .filter((m) => m.id)
+        .slice(-MAX_CHAT_MESSAGES)
+        .map((m) => ({ ...m, id: m.id as string })),
+    upsertOne: (m) => useStudyRoomStore.getState().upsertChatMessage(m),
+    removeOne: (id) => useStudyRoomStore.getState().removeChatMessage(id),
+    toRow: (m) => {
+      const message = m as { role: string; content: string; sources?: string[]; sentAt?: number };
+      return {
+        role: message.role,
+        content: message.content,
+        sources: JSON.stringify(message.sources ?? []),
+        sentAt: message.sentAt ?? Date.now(),
+        deleted: false,
+      };
+    },
+    fromRow: (row) => {
+      let sources: string[] | undefined;
+      try {
+        const parsed = JSON.parse(str(row.sources) || "[]");
+        sources = Array.isArray(parsed) ? parsed.map(String) : undefined;
+      } catch {}
+      return {
+        id: String(row.$id),
+        role: str(row.role) === "user" ? ("user" as const) : ("assistant" as const),
+        content: str(row.content),
+        sources,
+        sentAt: num(row.sentAt),
+      };
+    },
+  },
+  decks: {
+    table: "decks",
+    list: () => useStudyRoomStore.getState().decks,
+    upsertOne: (deck) => {
+      // rows carry no cards — keep the locally known ones when merging
+      const existing = useStudyRoomStore
+        .getState()
+        .decks.find((d) => d.id === (deck as Deck).id);
+      useStudyRoomStore.getState().upsertDeck({ ...(deck as Deck), cards: existing?.cards ?? [] });
+    },
+    removeOne: (id) => useStudyRoomStore.getState().removeDeck(id),
+    toRow: (deck) => {
+      const d = deck as Deck;
+      return {
+        title: d.title,
+        documentIds: JSON.stringify(d.documentIds ?? []),
+        createdAt: d.createdAt,
+        updatedAt: d.updatedAt,
+        deleted: false,
+      };
+    },
+    fromRow: (row) =>
+      ({
+        id: String(row.$id),
+        title: str(row.title) || "Deck",
+        documentIds: (() => {
+          try {
+            const parsed = JSON.parse(str(row.documentIds) || "[]");
+            return Array.isArray(parsed) ? parsed.map(String) : [];
+          } catch {
+            return [];
+          }
+        })(),
+        createdAt: num(row.createdAt),
+        updatedAt: num(row.updatedAt),
+        cards: [],
+      }) as unknown as Deck,
+  },
+  flashcards: {
+    table: "flashcards",
+    list: () =>
+      useStudyRoomStore
+        .getState()
+        .decks.flatMap((d) => d.cards.map((c) => ({ ...c, deckId: d.id }))),
+    upsertOne: (card) => {
+      const c = card as { id: string; deckId: string; front: string; back: string };
+      const room = useStudyRoomStore.getState();
+      // a card can arrive before its deck row — keep it attachable
+      if (!room.decks.some((d) => d.id === c.deckId)) {
+        room.upsertDeck({
+          id: c.deckId,
+          title: "Deck",
+          documentIds: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          cards: [],
+        });
+      }
+      room.upsertCard(c.deckId, { id: c.id, front: c.front, back: c.back });
+    },
+    removeOne: (id) => {
+      const deck = useStudyRoomStore.getState().decks.find((d) => d.cards.some((c) => c.id === id));
+      if (deck) useStudyRoomStore.getState().removeCard(deck.id, id);
+    },
+    toRow: (card) => {
+      const c = card as { deckId: string; front: string; back: string };
+      return { deckId: c.deckId, front: c.front, back: c.back, deleted: false };
+    },
+    fromRow: (row) =>
+      ({
+        id: String(row.$id),
+        deckId: str(row.deckId),
+        front: str(row.front),
+        back: str(row.back),
+      }) as unknown as { id: string; deckId: string; front: string; back: string },
+  },
+  selection: {
+    table: "study_selection",
+    list: () =>
+      useStudyRoomStore.getState().selectedDocIds.map((docId) => ({
+        id: hashId(`sel|${docId}`),
+        documentId: docId,
+      })),
+    upsertOne: (sel) => useStudyRoomStore.getState().upsertSelection((sel as { documentId: string }).documentId),
+    removeOne: (id) => {
+      const docId = useStudyRoomStore
+        .getState()
+        .selectedDocIds.find((d) => hashId(`sel|${d}`) === id);
+      if (docId) useStudyRoomStore.getState().removeSelection(docId);
+    },
+    toRow: (sel) => ({ documentId: (sel as { documentId: string }).documentId, deleted: false }),
+    fromRow: (row) => ({ id: String(row.$id), documentId: str(row.documentId) }),
+  },
+  portalEntries: {
+    table: "portal_entries",
+    list: () =>
+      (usePortalStore.getState().data?.days ?? []).flatMap((day) =>
+        day.entries.map((sub) => ({ ...sub, id: portalSubRowId(sub) })),
+      ),
+    upsertOne: (sub) => usePortalStore.getState().upsertSub(sub as PortalSub),
+    removeOne: (id) => usePortalStore.getState().removeSub(id),
+    toRow: (sub) => {
+      const e = sub as PortalSub;
+      return {
+        date: e.date,
+        weekday: e.weekday,
+        period: e.period,
+        course: e.course,
+        courseOld: e.courseOld ?? "",
+        substitute: e.substitute,
+        room: e.room,
+        info: e.info,
+        cancelled: e.cancelled,
+        deleted: false,
+      };
+    },
+    fromRow: (row) =>
+      ({
+        date: str(row.date),
+        weekday: str(row.weekday),
+        period: str(row.period),
+        course: str(row.course),
+        courseOld: str(row.courseOld) || undefined,
+        substitute: str(row.substitute),
+        room: str(row.room),
+        info: str(row.info),
+        cancelled: bool(row.cancelled),
+      }) as unknown as PortalSub,
+  },
+  portalCourses: {
+    table: "portal_courses",
+    list: () =>
+      (usePortalStore.getState().data?.courses ?? []).map((course) => ({
+        id: portalCourseRowId(course),
+        course,
+      })),
+    upsertOne: (row) => usePortalStore.getState().upsertCourse((row as { course: string }).course),
+    removeOne: (id) => {
+      const course = usePortalStore
+        .getState()
+        .data?.courses.find((c) => portalCourseRowId(c) === id);
+      if (course) usePortalStore.getState().removeCourse(id);
+    },
+    toRow: (row) => ({ course: (row as { course: string }).course, deleted: false }),
+    fromRow: (row) => ({ id: String(row.$id), course: str(row.course) }),
+  },
 };
 
 const ROW_STORE_KEYS = Object.keys(ROW_STORES);
+
+const ROW_TABLES: Record<string, string> = Object.fromEntries(
+  ROW_STORE_KEYS.map((key) => [key, ROW_STORES[key].table]),
+);
 
 async function sha256hex(input: string) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
@@ -240,10 +446,7 @@ const rowsUri = (table: string, rowId?: string) =>
 async function restListRows(table: string, userId: string): Promise<Array<RowData & { $id: string }>> {
   const headers = await getAuthHeaders();
   const queries = JSON.stringify([`equal("userId","${userId}")`, "limit(100)"]);
-  const res = await fetch(
-    `${REST_BASE}/databases/${DATABASE_ID}/tables/${table}/rows?queries=${encodeURIComponent(queries)}`,
-    { headers },
-  );
+  const res = await fetch(`${rowsUri(table)}?queries=${encodeURIComponent(queries)}`, { headers });
   if (!res.ok) throw new Error(`list ${table} → ${res.status}`);
   const json = (await res.json()) as { rows?: Array<RowData & { $id: string }> };
   return json.rows ?? [];
@@ -288,9 +491,11 @@ async function restSoftDeleteRow(table: string, rowId: string) {
 
 const rowPushTimers: Record<string, ReturnType<typeof setTimeout>> = {};
 
+let applyingRemote = false;
+
 function scheduleRowSync(storeKey: string) {
   const { user, status } = useAuthStore.getState();
-  if (status !== "signed-in" || !user) return;
+  if (status !== "signed-in" || !user || applyingRemote) return;
   clearTimeout(rowPushTimers[storeKey]);
   rowPushTimers[storeKey] = setTimeout(() => void syncRows(storeKey, user), PUSH_DEBOUNCE_MS);
 }
@@ -345,7 +550,12 @@ async function mergeRows(storeKey: string, rows: Array<RowData & { $id: string }
       if (localDigest !== digests[id]) continue; // pending local edit wins
     }
     const entity = def.fromRow(row);
-    def.upsertOne(entity);
+    applyingRemote = true;
+    try {
+      def.upsertOne(entity);
+    } finally {
+      applyingRemote = false;
+    }
     digests[id] = await rowDigest(entity, def);
   }
   useSyncMetaStore.getState().setRowDigests(storeKey, digests);
@@ -363,365 +573,16 @@ async function mergeRowEvent(storeKey: string, payload: RowData & { $id: string 
 }
 
 /* ================================================================== */
-/* BLOB STORES (timetable / studyroom / chats / decks)                 */
+/* RECONCILE                                                           */
 /* ================================================================== */
 
-interface BlobOps {
-  key: string;
-  collection: string;
-  read: () => Record<string, unknown>;
-  apply: (doc: Record<string, unknown>) => void;
-  isEmpty: () => boolean;
-}
-
-const BLOB_KEYS: Record<string, BlobOps> = {
-  timetable: {
-    key: "timetable",
-    collection: SNAPSHOTS_COLLECTION_ID,
-    read: () => ({ data: JSON.stringify({ entries: useTimetableStore.getState().entries }) }),
-    apply: (doc) => {
-      try {
-        const parsed = JSON.parse((doc.data as string) ?? "{}");
-        const list = Array.isArray(parsed.entries) ? parsed.entries : [];
-        useTimetableStore.getState().replaceEntries(
-          list.map((e: Record<string, unknown>) => ({
-            day: String(e.day ?? "Mon"),
-            period: Number(e.period ?? 1),
-            time: typeof e.time === "string" ? e.time : undefined,
-            subject: String(e.subject ?? ""),
-            teacher: typeof e.teacher === "string" ? e.teacher : undefined,
-            room: typeof e.room === "string" ? e.room : undefined,
-          })),
-        );
-      } catch {
-        // corrupted blob — keep the local timetable
-      }
-    },
-    isEmpty: () => useTimetableStore.getState().entries.length === 0,
-  },
-  studyroom: {
-    key: "studyroom",
-    collection: SNAPSHOTS_COLLECTION_ID,
-    read: () => {
-      const room = useStudyRoomStore.getState();
-      return {
-        data: JSON.stringify({
-          selectedDocIds: room.selectedDocIds,
-          deckIds: room.decks.map((d) => d.id),
-        }),
-      };
-    },
-    apply: (doc) => {
-      let parsed: Record<string, unknown> = {};
-      try {
-        parsed = JSON.parse((doc.data as string) ?? "{}");
-      } catch {
-        return;
-      }
-      appliedDeckIds = Array.isArray(parsed.deckIds)
-        ? parsed.deckIds.map((e) => String(e))
-        : [];
-      useStudyRoomStore.getState().replaceSelectedDocIds(
-        Array.isArray(parsed.selectedDocIds)
-          ? parsed.selectedDocIds.map((e) => String(e))
-          : [],
-      );
-    },
-    isEmpty: () => false,
-  },
-  chats: {
-    key: "chats",
-    collection: CHATS_COLLECTION_ID,
-    read: () => ({
-      messages: JSON.stringify(
-        useStudyRoomStore.getState().chat.slice(-MAX_CHAT_MESSAGES).map((m) => ({ role: m.role, content: m.content, sources: m.sources })),
-      ),
-    }),
-    apply: (doc) => {
-      let list: Array<Record<string, unknown>> = [];
-      try {
-        list = JSON.parse((doc.messages as string) ?? "[]");
-      } catch {
-        return;
-      }
-      useStudyRoomStore.getState().replaceChat(
-        list.map((m) => ({
-          role: String(m.role ?? "assistant"),
-          content: String(m.content ?? ""),
-          sources: Array.isArray(m.sources) ? m.sources.map((e) => String(e)) : undefined,
-        })),
-      );
-    },
-    isEmpty: () => useStudyRoomStore.getState().chat.length === 0,
-  },
-};
-
-const BLOB_KEYS_LIST = Object.keys(BLOB_KEYS);
-
-function collectionFor(key: string) {
-  return BLOB_KEYS[key]?.collection ?? SNAPSHOTS_COLLECTION_ID;
-}
-
-let applyingRemote = false;
-let subscribed = false;
-let appliedDeckIds: string[] | null = null;
-const blobPushTimers: Record<string, ReturnType<typeof setTimeout>> = {};
-
-/* ---------------- decks (one document per deck, as before) ---------------- */
-
-function docToDeck(doc: Record<string, unknown>): Deck {
-  let documentIds: string[] = [];
-  let cards: Deck["cards"] = [];
-  try {
-    documentIds = JSON.parse((doc.documentIds as string) ?? "[]");
-  } catch {}
-  try {
-    cards = JSON.parse((doc.cards as string) ?? "[]");
-  } catch {}
-  return {
-    id: String(doc.deckId ?? ""),
-    title: (doc.title as string) ?? "Deck",
-    documentIds,
-    createdAt: (doc.createdAt as number) ?? 0,
-    updatedAt: (doc.updatedAt as number) ?? 0,
-    cards,
-  };
-}
-
-async function pushDeck(user: AuthUser, deck: Deck) {
-  const docId = await snapshotDocId(user.id, DECKS_COLLECTION_ID, deck.id);
-  const headers = { "content-type": "application/json", ...(await getAuthHeaders()) };
-  const body = {
-    data: {
-      userId: user.id,
-      deckId: deck.id,
-      title: deck.title,
-      documentIds: JSON.stringify(deck.documentIds),
-      cards: JSON.stringify(deck.cards),
-      createdAt: deck.createdAt,
-      updatedAt: Date.now(),
-    },
-  };
-  let res = await fetch(
-    `${REST_BASE}/databases/${DATABASE_ID}/collections/${DECKS_COLLECTION_ID}/documents/${docId}`,
-    { method: "PATCH", headers, body: JSON.stringify(body) },
-  );
-  if (res.status === 404) {
-    res = await fetch(
-      `${REST_BASE}/databases/${DATABASE_ID}/collections/${DECKS_COLLECTION_ID}/documents`,
-      {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          documentId: docId,
-          permissions: [`read("user:${user.id}")`, `write("user:${user.id}")`],
-          data: body.data,
-        }),
-      },
-    );
-  }
-  if (!res.ok) throw new Error(`deck upsert → ${res.status}`);
-  lastDeckPush.set(docId, deck.updatedAt);
-}
-
-const lastDeckPush = new Map<string, number>();
-
-async function syncDecks(user: AuthUser) {
-  const room = useStudyRoomStore.getState();
-  for (const deck of room.decks) {
-    await pushDeck(user, deck);
-  }
-  // restore decks listed in the studyroom snapshot but missing locally
-  for (const id of appliedDeckIds ?? []) {
-    if (room.decks.some((d) => d.id === id)) continue;
-    try {
-      const docId = await snapshotDocId(user.id, DECKS_COLLECTION_ID, id);
-      const headers = { "content-type": "application/json", ...(await getAuthHeaders()) };
-      const res = await fetch(
-        `${REST_BASE}/databases/${DATABASE_ID}/collections/${DECKS_COLLECTION_ID}/documents/${docId}`,
-        { headers },
-      );
-      if (res.ok) {
-        const doc = (await res.json()) as Record<string, unknown>;
-        const deck = docToDeck({ ...doc, deckId: id });
-        if (deck.id) useStudyRoomStore.getState().upsertDeck(deck);
-      }
-    } catch {
-      // a missing deck stays missing
-    }
-  }
-}
-
-/* ================================================================== */
-/* BLOB RECONCILE (observe + retry machinery)                          */
-/* ================================================================== */
-
-async function observeBlobKey(user: AuthUser, key: string): Promise<boolean> {
-  const ops = BLOB_KEYS[key];
-  let remote: Record<string, unknown> | null = null;
-  let observedCloud = false; // 404 (empty cloud) counts as observed
-  try {
-    const docId = await snapshotDocId(user.id, collectionFor(key), key);
-    const headers = { "content-type": "application/json", ...(await getAuthHeaders()) };
-    const res = await fetch(
-      `${REST_BASE}/databases/${DATABASE_ID}/collections/${collectionFor(key)}/documents/${docId}`,
-      { headers },
-    );
-    if (res.status === 404) {
-      observedCloud = true;
-    } else if (res.ok) {
-      remote = (await res.json()) as Record<string, unknown>;
-      observedCloud = true;
-    } else {
-      observedCloud = false;
-    }
-  } catch {
-    observedCloud = false; // offline etc. — cloud state unknown
-  }
-  if (observedCloud) useSyncMetaStore.getState().markLoaded(key);
-
-  // …unless this device holds local edits that never made it up
-  const dirtyAt = useSyncMetaStore.getState().dirtyAt[key];
-  const remoteUpdatedAt = (remote?.updatedAt as number) ?? 0;
-  const hasUnsyncedEdits =
-    dirtyAt !== undefined && (remote === null || dirtyAt > remoteUpdatedAt);
-
-  if (remote && !hasUnsyncedEdits) {
-    ops.apply(remote);
-    useSyncMetaStore.getState().clearDirty(key);
-    return true;
-  }
-  if (!remote && ops.isEmpty()) return true;
-  // write afterwards: unsynced edits, or fresh local data with no snapshot yet
-  await pushBlobSnapshot(user, key);
-  return true;
-}
-
-async function pushBlobSnapshot(user: AuthUser, key: string) {
-  const ops = BLOB_KEYS[key];
-  const { setSyncing } = useAuthStore.getState();
-  setSyncing(true);
-  try {
-    const docId = await snapshotDocId(user.id, collectionFor(key), key);
-    const updatedAt = Date.now();
-    const attributes: Record<string, unknown> = {
-      userId: user.id,
-      ...ops.read(),
-      updatedAt,
-    };
-    if (key !== "chats") attributes.key = key;
-
-    // baseline rule: a device that has never observed this store's cloud state
-    // must not push (it could wipe data it has never seen)
-    if (key !== "chats" && !useSyncMetaStore.getState().isLoaded(key)) {
-      setSyncing(false);
-      return;
-    }
-    // second layer: never overwrite a non-empty blob with an empty one
-    if (key !== "chats") {
-      const headers = { "content-type": "application/json", ...(await getAuthHeaders()) };
-      const res = await fetch(
-        `${REST_BASE}/databases/${DATABASE_ID}/collections/${collectionFor(key)}/documents/${docId}`,
-        { headers },
-      );
-      if (res.ok) {
-        const remoteDoc = (await res.json()) as Record<string, unknown>;
-        const remoteRaw = (remoteDoc.data as string) ?? "{}";
-        let remoteParsed: Record<string, unknown> = {};
-        try {
-          remoteParsed = JSON.parse(remoteRaw);
-        } catch {}
-        const localParsed: Record<string, unknown> = JSON.parse(
-          (attributes.data as string) ?? "{}",
-        );
-        const localEmpty = Object.values(localParsed).every(
-          (v) => Array.isArray(v) && v.length === 0,
-        );
-        const remoteNonEmpty = Object.values(remoteParsed).some(
-          (v) => Array.isArray(v) && v.length > 0,
-        );
-        if (localEmpty && remoteNonEmpty) {
-          // keep the cloud copy; the next reconcile pulls it back
-          useSyncMetaStore.getState().clearDirty(key);
-          setSyncing(false);
-          return;
-        }
-      }
-    }
-
-    const headers = { "content-type": "application/json", ...(await getAuthHeaders()) };
-    const res = await fetch(
-      `${REST_BASE}/databases/${DATABASE_ID}/collections/${collectionFor(key)}/documents/${docId}`,
-      { method: "PATCH", headers, body: JSON.stringify({ data: attributes }) },
-    );
-    if (res.status === 404) {
-      await fetch(
-        `${REST_BASE}/databases/${DATABASE_ID}/collections/${collectionFor(key)}/documents`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            documentId: docId,
-            permissions: [`read("user:${user.id}")`, `write("user:${user.id}")`],
-            data: attributes,
-          }),
-        },
-      );
-    }
-    useSyncMetaStore.getState().clearDirty(key);
-    useAuthStore.getState().setSynced(Date.now());
-  } catch (e) {
-    setSyncing(false);
-    useAuthStore.getState().setSyncError((e as Error).message);
-  }
-}
-
-function scheduleBlobPush(key: string) {
-  const { user, status } = useAuthStore.getState();
-  if (status !== "signed-in" || !user || applyingRemote) return;
-  useSyncMetaStore.getState().markDirty(key, Date.now());
-  clearTimeout(blobPushTimers[key]);
-  blobPushTimers[key] = setTimeout(() => void pushBlobSnapshot(user, key), PUSH_DEBOUNCE_MS);
-}
-
-/* ================================================================== */
-/* FULL SYNC (blobs + rows) with retry + serialization                 */
-/* ================================================================== */
-
-
-let reconcileInFlight: Promise<void> = Promise.resolve();
-function reconcile(user: AuthUser): Promise<void> {
-  reconcileInFlight = reconcileInFlight
-    .then(() => runReconcile(user))
-    .finally(() => {
-      reconcileInFlight = Promise.resolve();
-    });
-  return reconcileInFlight;
-}
+let reconciling = false;
 
 async function runReconcile(user: AuthUser) {
-  applyingRemote = true;
+  if (reconciling) return;
+  reconciling = true;
   const auth = useAuthStore.getState();
   try {
-    // blobs: observe each with retries
-    let remaining = BLOB_KEYS_LIST;
-    for (let attempt = 0; attempt < 3 && remaining.length > 0; attempt++) {
-      if (attempt > 0) await new Promise((r) => setTimeout(r, 1500));
-      const failed: string[] = [];
-      for (const key of remaining) {
-        if (!(await observeBlobKey(user, key))) failed.push(key);
-      }
-      remaining = failed;
-    }
-    if (remaining.length > 0) {
-      auth.setSyncError(
-        `sync incomplete — ${remaining.join(", ")} could not be loaded; check your connection and tap Sync now`,
-      );
-      scheduleRetryLoop();
-      return;
-    }
-
-    // rows: push + pull each store
     const failedRows: string[] = [];
     for (const key of ROW_STORE_KEYS) {
       try {
@@ -738,12 +599,11 @@ async function runReconcile(user: AuthUser) {
       return;
     }
 
-    await syncDecks(user);
     auth.setSynced(Date.now());
   } catch (e) {
     auth.setSyncError((e as Error).message);
   } finally {
-    applyingRemote = false;
+    reconciling = false;
   }
 }
 
@@ -778,6 +638,12 @@ export async function resync() {
   await reconcile(user);
 }
 
+async function reconcile(user: AuthUser) {
+  const { status, user: current } = useAuthStore.getState();
+  if (status !== "signed-in" || current?.id !== user.id) return;
+  await runReconcile(user);
+}
+
 /* ================================================================== */
 /* REALTIME                                                            */
 /* ================================================================== */
@@ -787,34 +653,22 @@ let realtimeUnsub: Array<() => void> = [];
 function startRealtime(user: AuthUser) {
   stopRealtime();
   if (!appwriteClient) return;
-  const channels = [
-    `databases.${DATABASE_ID}.collections.${SNAPSHOTS_COLLECTION_ID}.documents`,
-    `databases.${DATABASE_ID}.collections.${CHATS_COLLECTION_ID}.documents`,
-    `databases.${DATABASE_ID}.collections.${DECKS_COLLECTION_ID}.documents`,
-    ...ROW_STORE_KEYS.map(
-      (key) => `databases.${DATABASE_ID}.tables.${BLOB_KEYS ? ROW_TABLES[key] : ""}.rows`,
-    ),
+  const channels = ROW_STORE_KEYS.map(
+    (key) => `databases.${DATABASE_ID}.tables.${ROW_TABLES[key]}.rows`,
+  );
+  realtimeUnsub = [
+    appwriteClient.subscribe(channels, (response) => {
+      try {
+        handleRealtimeEvent(
+          response as { events: string[]; payload: Record<string, unknown> },
+          user,
+        );
+      } catch {
+        // a malformed event must never break the tab
+      }
+    }),
   ];
-  const unsubs = [appwriteClient.subscribe(channels, (response) => {
-    try {
-      handleRealtimeEvent(
-        response as { events: string[]; payload: Record<string, unknown> },
-        user,
-      );
-    } catch {
-      // a malformed event must never break the tab
-    }
-  })];
-  realtimeUnsub = unsubs;
 }
-
-const ROW_TABLES: Record<string, string> = {
-  subjects: "subjects",
-  todos: "todos",
-  homework: "homeworks",
-  grades: "grades",
-  events: "events",
-};
 
 function stopRealtime() {
   for (const unsub of realtimeUnsub) unsub();
@@ -830,38 +684,15 @@ function handleRealtimeEvent(
   const event = response.events[0] ?? "";
   const payload = response.payload;
 
-  // row events: databases.{db}.tables.{table}/rows/...
+  // another user's row — never merge it
+  if (payload.userId !== user.id) return;
+
   if (event.includes("/tables/")) {
     for (const [storeKey, table] of Object.entries(ROW_TABLES)) {
       if (event.includes(`/tables/${table}/rows`)) {
         void mergeRowEvent(storeKey, { ...payload, $id: String(payload.$id ?? "") });
         return;
       }
-    }
-    return;
-  }
-
-  // deck events
-  if (event.includes(`/collections/${DECKS_COLLECTION_ID}/documents`)) {
-    if (payload.deleted === true || event.endsWith(".delete")) {
-      const deckId = payload.deckId;
-      if (typeof deckId === "string") useStudyRoomStore.getState().removeDeckSilently(deckId);
-      return;
-    }
-    const deck = docToDeck(payload);
-    if (deck.id) useStudyRoomStore.getState().upsertDeck(deck);
-    return;
-  }
-
-  // blob document events (timetable / studyroom / chats)
-  const key = payload.key;
-  if (typeof key === "string" && BLOB_KEYS[key]) {
-    if (event.endsWith(".delete")) return;
-    applyingRemote = true;
-    try {
-      BLOB_KEYS[key].apply(payload);
-    } finally {
-      applyingRemote = false;
     }
   }
 }
@@ -870,25 +701,44 @@ function handleRealtimeEvent(
 /* SUBSCRIPTIONS + INIT/AUTH                                           */
 /* ================================================================== */
 
+let subscribed = false;
+
 function subscribeStores() {
   if (subscribed) return;
   subscribed = true;
 
-  // blobs
-  useTimetableStore.subscribe(() => scheduleBlobPush("timetable"));
-  useStudyRoomStore.subscribe(() => scheduleBlobPush("studyroom"));
-  useStudyRoomStore.subscribe(() => {
-    const { user, status } = useAuthStore.getState();
-    if (status !== "signed-in" || !user || applyingRemote) return;
-    void syncDecks(user);
-  });
-
-  // rows
-  useSubjectsStore.subscribe(() => scheduleRowSync("subjects"));
-  useTodosStore.subscribe(() => scheduleRowSync("todos"));
-  useHomeworkStore.subscribe(() => scheduleRowSync("homework"));
-  useGradesStore.subscribe(() => scheduleRowSync("grades"));
-  useEventsStore.subscribe(() => scheduleRowSync("events"));
+  for (const key of ROW_STORE_KEYS) {
+    switch (key) {
+      case "subjects":
+        useSubjectsStore.subscribe(() => scheduleRowSync("subjects"));
+        break;
+      case "todos":
+        useTodosStore.subscribe(() => scheduleRowSync("todos"));
+        break;
+      case "homework":
+        useHomeworkStore.subscribe(() => scheduleRowSync("homework"));
+        break;
+      case "grades":
+        useGradesStore.subscribe(() => scheduleRowSync("grades"));
+        break;
+      case "events":
+        useEventsStore.subscribe(() => scheduleRowSync("events"));
+        break;
+      case "timetable":
+        useTimetableStore.subscribe(() => scheduleRowSync("timetable"));
+        break;
+      case "chat":
+      case "decks":
+      case "flashcards":
+      case "selection":
+        useStudyRoomStore.subscribe(() => scheduleRowSync(key));
+        break;
+      case "portalEntries":
+      case "portalCourses":
+        usePortalStore.subscribe(() => scheduleRowSync(key));
+        break;
+    }
+  }
 }
 
 /* ---------------- session persistence ----------------
@@ -956,7 +806,6 @@ export async function initSync() {
     setAuth(null, "signed-out");
     return;
   }
-  if (savedSecret) appwriteClient.setSession(savedSecret);
   setAuth(user, "signed-in");
   subscribeStores();
   startRealtime(user);
@@ -992,44 +841,3 @@ export async function signOut() {
   await clearSession();
   useAuthStore.getState().setAuth(null, "signed-out");
 }
-
-/**
- * Mirrors the fetched substitute plan (plan ONLY — portal credentials never
- * leave this device) into a `portal` snapshot document, so the daily-digest
- * Appwrite function can respect cancellations and substitutions.
- */
-export async function mirrorPortal(plan: PortalPlanJson) {
-  const { user, status } = useAuthStore.getState();
-  if (status !== "signed-in" || !user || !appwriteClient) return;
-  try {
-    const docId = await snapshotDocId(user.id, SNAPSHOTS_COLLECTION_ID, "portal");
-    const headers = { "content-type": "application/json", ...(await getAuthHeaders()) };
-    const attributes = {
-      userId: user.id,
-      key: "portal",
-      data: JSON.stringify({ days: plan.days, courses: plan.courses }),
-      updatedAt: Date.now(),
-    };
-    let res = await fetch(
-      `${REST_BASE}/databases/${DATABASE_ID}/collections/${SNAPSHOTS_COLLECTION_ID}/documents/${docId}`,
-      { method: "PATCH", headers, body: JSON.stringify({ data: attributes }) },
-    );
-    if (res.status === 404) {
-      res = await fetch(
-        `${REST_BASE}/databases/${DATABASE_ID}/collections/${SNAPSHOTS_COLLECTION_ID}/documents`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            documentId: docId,
-            permissions: [`read("user:${user.id}")`, `write("user:${user.id}")`],
-            data: attributes,
-          }),
-        },
-      );
-    }
-  } catch {
-    // mirroring is best-effort — the digest just falls back to plain classes
-  }
-}
-

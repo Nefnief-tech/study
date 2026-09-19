@@ -430,6 +430,15 @@ class Deck {
         'updatedAt': updatedAt,
         'cards': cards.map((c) => c.toJson()).toList(),
       };
+
+  Deck withCards(List<Flashcard> newCards) => Deck(
+        id: id,
+        title: title,
+        documentIds: documentIds,
+        createdAt: createdAt,
+        updatedAt: updatedAt,
+        cards: newCards,
+      );
 }
 
 class ChatMessage {
@@ -438,8 +447,18 @@ class ChatMessage {
   final String content;
   /// document names that were in context for this answer
   final List<String>? sources;
+  /// stable identity for row sync — stamped by the store on append
+  final String? id;
+  /// wall-clock ms, used to order messages across devices
+  final int? sentAt;
 
-  const ChatMessage({required this.role, required this.content, this.sources});
+  const ChatMessage({
+    required this.role,
+    required this.content,
+    this.sources,
+    this.id,
+    this.sentAt,
+  });
 
   bool get isUser => role == 'user';
 
@@ -447,12 +466,16 @@ class ChatMessage {
         role: (j['role'] as String?) ?? 'assistant',
         content: (j['content'] as String?) ?? '',
         sources: ((j['sources'] as List?) ?? []).map((e) => e as String).toList(),
+        id: j['id'] as String?,
+        sentAt: (j['sentAt'] as num?)?.toInt(),
       );
 
   Map<String, dynamic> toJson() => {
         'role': role,
         'content': content,
         if (sources != null && sources!.isNotEmpty) 'sources': sources,
+        if (id != null) 'id': id,
+        if (sentAt != null) 'sentAt': sentAt,
       };
 }
 

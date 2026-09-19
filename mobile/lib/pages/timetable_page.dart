@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../models/types.dart';
 import '../stores/registry.dart';
 import '../services/api.dart';
-import '../appwrite/sync.dart' show mirrorPortal;
 import '../theme/app_theme.dart';
 import '../utils/timetable_io.dart';
 import '../utils/utils.dart';
@@ -685,7 +684,6 @@ Future<void> doPortalFetch(BuildContext context) async {
     final plan = await SemesterApi.fetchPortalPlan();
     portal.setData(plan);
     // best-effort: plan (no credentials) into the cloud for the daily digest
-    await mirrorPortal(plan);
   } on ApiException catch (e) {
     portal.setError(e.message);
   } catch (_) {

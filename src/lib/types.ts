@@ -98,8 +98,12 @@ export interface Deck {
 }
 
 export interface ChatMessage {
+  /** stable identity for row sync — stamped by the store on append */
+  id?: string;
   role: "user" | "assistant";
   content: string;
   /** document names that were in context for this answer */
   sources?: string[];
+  /** wall-clock ms, used to order messages across devices */
+  sentAt?: number;
 }

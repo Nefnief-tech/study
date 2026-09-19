@@ -194,3 +194,22 @@ const PRIORITY_ORDER = {
   Priority.medium: 1,
   Priority.low: 2,
 };
+
+/// deterministic 16-hex id for entities without a natural key (timetable
+/// entries, portal subs, ...) — MUST match the web implementation byte for
+/// byte, since both sides derive the same cloud row id from the same content
+String hashId(String input) {
+  var h1 = 0x811c9dc5;
+  var h2 = 0x1000193;
+  for (var i = 0; i < input.length; i++) {
+    final c = input.codeUnitAt(i);
+    h1 = _imul(h1 ^ c, 0x01000193);
+    h2 = _imul((h2 + c) & 0xffffffff, 0x85ebca6b);
+  }
+  return h1.toRadixString(16).padLeft(8, '0') +
+      h2.toRadixString(16).padLeft(8, '0');
+}
+
+/// 32-bit multiply with wrap-around — the low 32 bits of the product, which
+/// is exactly what JS Math.imul(... ) >>> 0 produces
+int _imul(int a, int b) => (a * b) & 0xffffffff;

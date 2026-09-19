@@ -121,6 +121,90 @@ const TABLES = [
       { type: "boolean", key: "deleted", required: false, default: false },
     ],
   },
+  {
+    id: "timetable_entries",
+    name: "Timetable entries",
+    columns: [
+      { type: "string", key: "userId", size: 64, required: true },
+      { type: "string", key: "day", size: 8, required: true },
+      { type: "integer", key: "period", required: true, min: 0, max: 200 },
+      { type: "string", key: "time", size: 32, required: false },
+      { type: "string", key: "subject", size: 64, required: true },
+      { type: "string", key: "teacher", size: 64, required: false },
+      { type: "string", key: "room", size: 64, required: false },
+      { type: "boolean", key: "deleted", required: false, default: false },
+    ],
+  },
+  {
+    id: "chat_messages",
+    name: "Chat messages",
+    columns: [
+      { type: "string", key: "userId", size: 64, required: true },
+      { type: "string", key: "role", size: 16, required: true },
+      { type: "string", key: "content", size: 100000, required: true },
+      { type: "string", key: "sources", size: 20000, required: false },
+      { type: "integer", key: "sentAt", required: true, min: 0, max: 9_000_000_000_000 },
+      { type: "boolean", key: "deleted", required: false, default: false },
+    ],
+  },
+  {
+    id: "decks",
+    name: "Flashcard decks",
+    columns: [
+      { type: "string", key: "userId", size: 64, required: true },
+      { type: "string", key: "title", size: 256, required: true },
+      { type: "string", key: "documentIds", size: 20000, required: false },
+      { type: "integer", key: "createdAt", required: true, min: 0, max: 9_000_000_000_000 },
+      { type: "integer", key: "updatedAt", required: true, min: 0, max: 9_000_000_000_000 },
+      { type: "boolean", key: "deleted", required: false, default: false },
+    ],
+  },
+  {
+    id: "flashcards",
+    name: "Flashcards",
+    columns: [
+      { type: "string", key: "userId", size: 64, required: true },
+      { type: "string", key: "deckId", size: 64, required: true },
+      { type: "string", key: "front", size: 50000, required: true },
+      { type: "string", key: "back", size: 50000, required: false },
+      { type: "boolean", key: "deleted", required: false, default: false },
+    ],
+  },
+  {
+    id: "study_selection",
+    name: "Study room selection",
+    columns: [
+      { type: "string", key: "userId", size: 64, required: true },
+      { type: "string", key: "documentId", size: 128, required: true },
+      { type: "boolean", key: "deleted", required: false, default: false },
+    ],
+  },
+  {
+    id: "portal_entries",
+    name: "Portal substitute entries",
+    columns: [
+      { type: "string", key: "userId", size: 64, required: true },
+      { type: "string", key: "date", size: 16, required: true },
+      { type: "string", key: "weekday", size: 8, required: false },
+      { type: "string", key: "period", size: 8, required: false },
+      { type: "string", key: "course", size: 64, required: false },
+      { type: "string", key: "courseOld", size: 64, required: false },
+      { type: "string", key: "substitute", size: 64, required: false },
+      { type: "string", key: "room", size: 32, required: false },
+      { type: "string", key: "info", size: 256, required: false },
+      { type: "boolean", key: "cancelled", required: false, default: false },
+      { type: "boolean", key: "deleted", required: false, default: false },
+    ],
+  },
+  {
+    id: "portal_courses",
+    name: "Portal courses",
+    columns: [
+      { type: "string", key: "userId", size: 64, required: true },
+      { type: "string", key: "course", size: 64, required: true },
+      { type: "boolean", key: "deleted", required: false, default: false },
+    ],
+  },
 ];
 
 const tableBase = `/tablesdb/${DATABASE_ID}/tables`;
