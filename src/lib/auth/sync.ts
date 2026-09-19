@@ -457,11 +457,15 @@ async function rowFetch(path: string, init: RequestInit): Promise<Response> {
 }
 
 async function restListRows(table: string, userId: string): Promise<Array<RowData & { $id: string }>> {
-  const queries = JSON.stringify([
+  // the API wants one JSON-encoded query per `queries[]` param — a single
+  // JSON-array string under `queries=` is rejected as invalid (400)
+  const query = [
     { method: "equal", attribute: "userId", values: [userId] },
     { method: "limit", values: [100] },
-  ]);
-  const res = await rowFetch(`${rowsUri(table)}?queries=${encodeURIComponent(queries)}`, {});
+  ]
+    .map((q) => `queries[]=${encodeURIComponent(JSON.stringify(q))}`)
+    .join("&");
+  const res = await rowFetch(`${rowsUri(table)}?${query}`, {});
   if (!res.ok) throw new Error(`list ${table} → ${res.status}`);
   const json = (await res.json()) as { rows?: Array<RowData & { $id: string }> };
   return json.rows ?? [];
