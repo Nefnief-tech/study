@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import 'package:appwrite/appwrite.dart';
 import 'package:crypto/crypto.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/types.dart';
@@ -119,7 +120,7 @@ final _rowAdapters = <_RowAdapter>[
       'title': t.title,
       'notes': t.notes ?? '',
       'due': t.due ?? '',
-      'priority': t.priority.name,
+      'priority': _enumName(t.priority),
       'subjectId': t.subjectId ?? '',
       'done': t.done,
       'createdAt': t.createdAt,
@@ -152,7 +153,7 @@ final _rowAdapters = <_RowAdapter>[
       'title': h.title,
       'notes': h.notes ?? '',
       'due': h.due ?? '',
-      'priority': h.priority.name,
+      'priority': _enumName(h.priority),
       'subjectId': h.subjectId ?? '',
       'done': h.done,
       'createdAt': h.createdAt,
@@ -212,7 +213,7 @@ final _rowAdapters = <_RowAdapter>[
       'title': e.title,
       'date': e.date,
       'time': e.time ?? '',
-      'type': e.type.name,
+      'type': _enumName(e.type),
       'subjectId': e.subjectId ?? '',
       'notes': e.notes ?? '',
     },
@@ -250,14 +251,16 @@ final _rowAdapters = <_RowAdapter>[
       'teacher': e['teacher'] ?? '',
       'room': e['room'] ?? '',
     },
-    fromRow: (id, row) => TimetableEntry(
-      day: (row['day'] as String?) ?? 'Mon',
-      period: (row['period'] as num?)?.toInt() ?? 1,
-      time: (row['time'] as String?)?.isEmpty == false ? row['time'] as String : null,
-      subject: (row['subject'] as String?) ?? '',
-      teacher: (row['teacher'] as String?)?.isEmpty == false ? row['teacher'] as String : null,
-      room: (row['room'] as String?)?.isEmpty == false ? row['room'] as String : null,
-    ),
+    fromRow: (id, row) => {
+      // map-based adapter: toRow()/upsert() below read map keys, and the pull
+      // phase feeds fromRow()'s result straight back into both
+      'day': (row['day'] as String?) ?? 'Mon',
+      'period': (row['period'] as num?)?.toInt() ?? 1,
+      'time': (row['time'] as String?)?.isEmpty == false ? row['time'] as String : null,
+      'subject': (row['subject'] as String?) ?? '',
+      'teacher': (row['teacher'] as String?)?.isEmpty == false ? row['teacher'] as String : null,
+      'room': (row['room'] as String?)?.isEmpty == false ? row['room'] as String : null,
+    },
     upsert: (e) => Stores.I.timetable.upsertEntry(
       TimetableEntry.fromJson(Map<String, dynamic>.from(e as Map)),
     ),
@@ -291,9 +294,7 @@ final _rowAdapters = <_RowAdapter>[
         sentAt: (row['sentAt'] as num?)?.toInt(),
       );
     },
-    upsert: (m) => _room.upsertChatMessage(
-      ChatMessage.fromJson(Map<String, dynamic>.from(m)),
-    ),
+    upsert: (m) => _room.upsertChatMessage(m),
     remove: (id) => _room.removeChatMessage(id),
   ),
   _RowAdapter(
@@ -332,11 +333,12 @@ final _rowAdapters = <_RowAdapter>[
         .toList(),
     idOf: (c) => c['id'] as String,
     toRow: (c) => {'deckId': c['deckId'], 'front': c['front'], 'back': c['back'] ?? ''},
-    fromRow: (id, row) => Flashcard(
-      id: id,
-      front: (row['front'] as String?) ?? '',
-      back: (row['back'] as String?) ?? '',
-    ),
+    fromRow: (id, row) => {
+      'id': id,
+      'deckId': (row['deckId'] as String?) ?? '',
+      'front': (row['front'] as String?) ?? '',
+      'back': (row['back'] as String?) ?? '',
+    },
     upsert: (c) {
       final map = Map<String, dynamic>.from(c as Map);
       // a card can arrive before its deck row — keep it attachable
@@ -404,7 +406,7 @@ final _rowAdapters = <_RowAdapter>[
       info: (row['info'] as String?) ?? '',
       cancelled: row['cancelled'] == true,
     ),
-    upsert: (e) => _portal.upsertSub(PortalSub.fromJson(Map<String, dynamic>.from(e as Map))),
+    upsert: (e) => _portal.upsertSub(e),
     remove: (id) => _portal.removeSub(id),
   ),
   _RowAdapter(
@@ -443,6 +445,56 @@ void scheduleRowSync(String storeKey) {
   );
 }
 
+/// enum → name string that survives dynamic dispatch: enum.name is an
+/// extension (invisible to `dynamic` receivers on the phone's Dart 2.x
+/// runtime → NoSuchMethodError), while toString() is a real instance method
+String _enumName(Object? value) => value.toString().split('.').last;
+
+/// PUT upsert (create-or-update) over raw REST with JWT auth. Session-cookie
+/// auth — the Dart SDK's default — is rejected by Appwrite Cloud 2.2 for row
+/// CREATEs that carry user-scoped permissions ("Permissions must be one of:
+/// (any, guests)"), while JWT-authenticated calls may set them. The web pushes
+/// the same way.
+Future<void> _restUpsertRow({
+  required String table,
+  required String rowId,
+  required Map<String, dynamic> row,
+  required String userId,
+}) async {
+  final jwt = await getJwt();
+  if (jwt == null) throw Exception('row upsert without JWT (signed out?)');
+  http.Response res = await _putRow(jwt, table, rowId, row, userId);
+  if (res.statusCode == 401) {
+    invalidateJwtCache(); // cached token expired — mint a fresh one once
+    final fresh = await getJwt();
+    if (fresh != null) res = await _putRow(fresh, table, rowId, row, userId);
+  }
+  if (res.statusCode < 200 || res.statusCode >= 300) {
+    throw Exception('upsert $table/$rowId → ${res.statusCode}: ${res.body}');
+  }
+}
+
+Future<http.Response> _putRow(String jwt, String table, String rowId,
+    Map<String, dynamic> row, String userId) {
+  final uri = Uri.parse(
+      '$kAppwriteEndpoint/tablesdb/$kDatabaseId/tables/$table/rows/$rowId');
+  return http.put(
+    uri,
+    headers: {
+      'X-Appwrite-Project': kAppwriteProjectId,
+      'X-Appwrite-JWT': jwt,
+      'content-type': 'application/json',
+    },
+    body: jsonEncode({
+      'data': row,
+      'permissions': [
+        'read("user:$userId")',
+        'write("user:$userId")',
+      ],
+    }),
+  );
+}
+
 /// sync one row store: push local diff, then pull + merge cloud rows
 Future<void> syncRowStore(AuthUser user, String storeKey) async {
   final adapter = _rowAdapters.firstWhere((a) => a.storeKey == storeKey);
@@ -459,15 +511,11 @@ Future<void> syncRowStore(AuthUser user, String storeKey) async {
     final digest = _rowDigestOf(row);
     currentDigests[id] = digest;
     if (digests[id] != digest) {
-      await tablesDB.upsertRow(
-        databaseId: kDatabaseId,
-        tableId: adapter.table,
+      await _restUpsertRow(
+        table: adapter.table,
         rowId: id,
-        data: row,
-        permissions: [
-          Permission.read(Role.user(user.id)),
-          Permission.write(Role.user(user.id)),
-        ],
+        row: row,
+        userId: user.id,
       );
       // record the digest we just pushed — otherwise the entity re-pushes on
       // every sync (each push echoing a realtime event → endless churn that
@@ -529,6 +577,18 @@ Future<void> syncRowStore(AuthUser user, String storeKey) async {
       final entity = adapter.fromRow(id, row);
       adapter.upsert(entity);
       digests[id] = _rowDigestOf({...adapter.toRow(entity), 'userId': user.id});
+    }
+
+    // rows that our digests claim are synced but the cloud no longer returns
+    // were hard-deleted server-side — re-upload them now, otherwise their
+    // stale digests would suppress the push forever
+    final cloudIds = rows.rows.map((doc) => doc.$id).toSet();
+    for (final entry in localById.entries) {
+      final id = entry.key;
+      if (cloudIds.contains(id) || !digests.containsKey(id)) continue;
+      final row = {...adapter.toRow(entry.value), 'userId': user.id};
+      await _restUpsertRow(table: adapter.table, rowId: id, row: row, userId: user.id);
+      digests[id] = _rowDigestOf(row);
     }
   } finally {
     applyingRemote = wasApplying;

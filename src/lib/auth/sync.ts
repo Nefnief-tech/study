@@ -573,6 +573,25 @@ async function pullRows(storeKey: string, user: AuthUser) {
   const def = ROW_STORES[storeKey];
   const rows = await restListRows(def.table, user.id);
   await mergeRows(storeKey, rows);
+
+  // rows our digests claim are synced but the cloud no longer returns were
+  // hard-deleted server-side — drop their digests and re-push, otherwise
+  // the stale digests would suppress the upload forever (full pulls only:
+  // single realtime events can't tell whether other rows still exist)
+  const digests = { ...(useSyncMetaStore.getState().rowDigests[storeKey] ?? {}) };
+  const localIds = new Set(def.list().map((e) => e.id));
+  const cloudIds = new Set(rows.map((row) => String(row.$id)));
+  let vanished = false;
+  for (const id of Object.keys(digests)) {
+    if (!cloudIds.has(id) && localIds.has(id)) {
+      delete digests[id];
+      vanished = true;
+    }
+  }
+  if (vanished) {
+    useSyncMetaStore.getState().setRowDigests(storeKey, digests);
+    scheduleRowSync(storeKey);
+  }
 }
 
 /** single realtime row event → same merge as a pull */
