@@ -469,40 +469,74 @@ function subscribeStores() {
   useStudyRoomStore.subscribe(() => scheduleDecks());
 }
 
-async function reconcile(user: AuthUser) {
+/** observes one key's cloud state and reconciles it — returns true when the
+ *  cloud was actually observed (false = network failure, retry worthwhile) */
+async function observeAndReconcileKey(user: AuthUser, key: string): Promise<boolean> {
+  const ops = KEYS[key];
+  let remote: Record<string, unknown> | null = null;
+  let observedCloud = false; // 404 (empty cloud) counts as observed
+  try {
+    const docId = await snapshotDocId(user.id, collectionFor(key), key);
+    remote = (await databases!.getDocument(
+      DATABASE_ID,
+      collectionFor(key),
+      docId,
+    )) as unknown as Record<string, unknown>;
+    observedCloud = true;
+  } catch (e) {
+    remote = null;
+    observedCloud = (e as { code?: number }).code === 404;
+  }
+  if (observedCloud) useSyncMetaStore.getState().markLoaded(key);
+
+  // …unless this device holds local edits that never made it up
+  const dirtyAt = useSyncMetaStore.getState().dirtyAt[key];
+  const hasUnsyncedEdits = dirtyAt !== undefined && (!remote || dirtyAt > (remote.updatedAt as number));
+
+  if (remote && !hasUnsyncedEdits) {
+    ops.apply(remote);
+    useSyncMetaStore.getState().clearDirty(key);
+    return true;
+  }
+  if (!remote && ops.isEmpty()) return true;
+  // write afterwards: unsynced edits, or fresh local data with no snapshot yet
+  await pushSnapshot(user.id, key);
+  return true;
+}
+
+/** serializes reconciles — page load, visibility-return and "Sync now" must
+ *  never race each other (concurrent runs fight over `applyingRemote`) */
+let reconcileInFlight: Promise<void> = Promise.resolve();
+function reconcile(user: AuthUser): Promise<void> {
+  reconcileInFlight = reconcileInFlight
+    .then(() => runReconcile(user))
+    .finally(() => {
+      reconcileInFlight = Promise.resolve();
+    });
+  return reconcileInFlight;
+}
+
+async function runReconcile(user: AuthUser) {
   applyingRemote = true;
   const { setSynced, setSyncError } = useAuthStore.getState();
   try {
-    for (const [key, ops] of Object.entries(KEYS)) {
-      // load from the db first…
-      let remote: Record<string, unknown> | null = null;
-      let observedCloud = false; // 404 (empty cloud) counts as observed
-      try {
-        const docId = await snapshotDocId(user.id, collectionFor(key), key);
-        remote = (await databases!.getDocument(
-          DATABASE_ID,
-          collectionFor(key),
-          docId,
-        )) as unknown as Record<string, unknown>;
-        observedCloud = true;
-      } catch (e) {
-        remote = null;
-        observedCloud = (e as { code?: number }).code === 404;
+    // flaky networks kill individual requests — retry every key that wasn't
+    // observed until all stores are covered or the attempts run out
+    let remaining = Object.keys(KEYS);
+    for (let attempt = 0; attempt < 3 && remaining.length > 0; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 1500));
+      const failed: string[] = [];
+      for (const key of remaining) {
+        if (!(await observeAndReconcileKey(user, key))) failed.push(key);
       }
-      if (observedCloud) useSyncMetaStore.getState().markLoaded(key);
+      remaining = failed;
+    }
 
-      // …unless this device holds local edits that never made it up
-      const dirtyAt = useSyncMetaStore.getState().dirtyAt[key];
-      const hasUnsyncedEdits = dirtyAt !== undefined && (!remote || dirtyAt > (remote.updatedAt as number));
-
-      if (remote && !hasUnsyncedEdits) {
-        ops.apply(remote);
-        useSyncMetaStore.getState().clearDirty(key);
-        continue;
-      }
-      if (!remote && ops.isEmpty()) continue;
-      // write afterwards: unsynced edits, or fresh local data with no snapshot yet
-      await pushSnapshot(user.id, key);
+    if (remaining.length > 0) {
+      setSyncError(
+        `sync incomplete — ${remaining.join(", ")} could not be loaded; check your connection and tap Sync now`,
+      );
+      return;
     }
 
     // decks reconcile: fresh device loads everything, otherwise merge per deck

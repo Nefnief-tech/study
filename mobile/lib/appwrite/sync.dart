@@ -1,8 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
+
 import 'package:appwrite/appwrite.dart';
 import 'package:crypto/crypto.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/types.dart';
 import '../stores/auth_store.dart';
@@ -176,28 +180,76 @@ List<String>? appliedDeckIds;
 final _lastPushedAt = <String, int>{};
 RealtimeSubscription? _realtimeSub;
 
+
+/* ---------------- raw REST document calls ----------------
+ * The Dart SDK's typed Document parser crashes on our collections (the new
+ * API returns the row under a `data` key while our schema also has a string
+ * attribute named `data` — "type 'String' is not a subtype of type
+ * 'Map<String, dynamic>'"). The web SDK is dynamically typed and unaffected.
+ * These calls mirror the digest function: plain REST + Appwrite JWT. */
+
+Future<Map<String, String>> _restHeaders() async {
+  final jwt = await getJwt();
+  return {
+    'X-Appwrite-Project': kAppwriteProjectId,
+    if (jwt != null) 'X-Appwrite-JWT': jwt,
+    'content-type': 'application/json',
+  };
+}
+
+Uri _docUri(String collection, String docId) => Uri.parse(
+    '$kAppwriteEndpoint/databases/$kDatabaseId/collections/$collection/documents/$docId');
+
+/// GET a document → flat attribute map; null when it does not exist
+Future<Map<String, dynamic>?> restGetDocument(String collection, String docId) async {
+  final res = await http
+      .get(_docUri(collection, docId), headers: await _restHeaders())
+      .timeout(const Duration(seconds: 20));
+  if (res.statusCode == 404) return null;
+  if (res.statusCode != 200) {
+    throw Exception('get $collection/$docId → ${res.statusCode}: ${res.body}');
+  }
+  return jsonDecode(res.body) as Map<String, dynamic>;
+}
+
+/// PATCH the document; creates it (owner-only permissions) when missing
+Future<void> restUpsertDocument(String collection, String docId,
+    Map<String, dynamic> attributes, String userId) async {
+  final headers = await _restHeaders();
+  var res = await http
+      .patch(_docUri(collection, docId),
+          headers: headers, body: jsonEncode({'data': attributes}))
+      .timeout(const Duration(seconds: 20));
+  if (res.statusCode == 404) {
+    final createUri = Uri.parse(
+        '$kAppwriteEndpoint/databases/$kDatabaseId/collections/$collection/documents');
+    res = await http
+        .post(createUri,
+            headers: headers,
+            body: jsonEncode({
+              'documentId': docId,
+              'data': attributes,
+              'permissions': [
+                'read("user:$userId")',
+                'write("user:$userId")',
+              ],
+            }))
+        .timeout(const Duration(seconds: 20));
+  }
+  if (res.statusCode >= 400) {
+    throw Exception('upsert $collection/$docId → ${res.statusCode}: ${res.body}');
+  }
+}
+
+Future<void> restDeleteDocument(String collection, String docId) async {
+  await http
+      .delete(_docUri(collection, docId), headers: await _restHeaders())
+      .timeout(const Duration(seconds: 20)); // 404 is fine — already gone
+}
+
 Future<void> _upsertDocument(
     String collection, String docId, Map<String, dynamic> payload, String userId) async {
-  final permissions = [
-    Permission.read(Role.user(userId)),
-    Permission.write(Role.user(userId)),
-  ];
-  try {
-    await databases.updateDocument(
-      databaseId: kDatabaseId,
-      collectionId: collection,
-      documentId: docId,
-      data: payload,
-    );
-  } catch (_) {
-    await databases.createDocument(
-      databaseId: kDatabaseId,
-      collectionId: collection,
-      documentId: docId,
-      data: payload,
-      permissions: permissions,
-    );
-  }
+  await restUpsertDocument(collection, docId, payload['data'] as Map<String, dynamic>, userId);
 }
 
 /// best-effort "was this an offline failure?" — the change stays dirty either
@@ -232,12 +284,9 @@ Future<bool> _wouldWipeRemote(AuthUser user, String key, Map<String, dynamic> at
 
   try {
     final docId = await snapshotDocId(user.id, _collectionFor(key), key);
-    final doc = await databases.getDocument(
-      databaseId: kDatabaseId,
-      collectionId: _collectionFor(key),
-      documentId: docId,
-    );
-    final remoteRaw = doc.data['data'];
+    final doc = await restGetDocument(_collectionFor(key), docId);
+    if (doc == null) return false;
+    final remoteRaw = doc['data'];
     if (remoteRaw is! String) return false;
     final remote = jsonDecode(remoteRaw);
     if (remote is! Map) return false;
@@ -327,12 +376,8 @@ List<Flashcard> _decodeCards(String? json) {
 Future<Deck?> _getDeckDoc(AuthUser user, String deckId) async {
   try {
     final docId = await snapshotDocId(user.id, kDecksCollectionId, deckId);
-    final doc = await databases.getDocument(
-      databaseId: kDatabaseId,
-      collectionId: kDecksCollectionId,
-      documentId: docId,
-    );
-    return _docToDeck(doc.data);
+    final doc = await restGetDocument(kDecksCollectionId, docId);
+    return doc == null ? null : _docToDeck(doc);
   } catch (_) {
     return null;
   }
@@ -372,11 +417,7 @@ Future<void> _syncDecks(AuthUser user) async {
     for (final id in deletedIds) {
       final docId = await snapshotDocId(user.id, kDecksCollectionId, id);
       try {
-        await databases.deleteDocument(
-          databaseId: kDatabaseId,
-          collectionId: kDecksCollectionId,
-          documentId: docId,
-        );
+        await restDeleteDocument(kDecksCollectionId, docId);
       } catch (_) {
         // already gone
       }
@@ -464,47 +505,93 @@ void _subscribeStores() {
   _ensureDrainLoop();
 }
 
-Future<void> reconcile(AuthUser user) async {
+/// observes one key's cloud state and reconciles it — returns true when the
+/// cloud was actually observed (false = network failure, retry worthwhile)
+Future<bool> _observeAndReconcileKey(AuthUser user, String key) async {
+  final ops = _keys[key]!;
+  Map<String, dynamic>? remote;
+  var observedCloud = false; // 404 (empty cloud) counts as observed
+  try {
+    final docId = await snapshotDocId(user.id, _collectionFor(key), key);
+    remote = await restGetDocument(_collectionFor(key), docId);
+    observedCloud = true;
+  } on AppwriteException catch (e) {
+    remote = null;
+    observedCloud = e.code == 404;
+    if (e.code != 404) debugPrint('[sync] observe $key failed: ${e.type} ${e.code} ${e.message}');
+  } catch (e) {
+    remote = null;
+    observedCloud = false; // offline etc. — cloud state unknown
+    debugPrint('[sync] observe $key failed: $e');
+  }
+  if (observedCloud) Stores.I.syncMeta.markLoaded(key);
+  debugPrint('[sync] observe $key → observed:$observedCloud remote:${remote != null}');
+
+  // …unless this device holds local edits that never made it up
+  final dirtyAt = Stores.I.syncMeta.dirtyAt[key];
+  final remoteUpdatedAt = (remote?['updatedAt'] as num?)?.toInt() ?? 0;
+  final hasUnsyncedEdits =
+      dirtyAt != null && (remote == null || dirtyAt > remoteUpdatedAt);
+
+  if (remote != null && !hasUnsyncedEdits) {
+    ops.apply(remote);
+    Stores.I.syncMeta.clearDirty(key);
+    return true;
+  }
+  if (remote == null && ops.isEmpty()) return true;
+  // write afterwards: unsynced edits, or fresh local data with no snapshot yet
+  await _pushSnapshot(user, key);
+  return true;
+}
+
+/// serializes reconciles — startup, resume and "Sync now" must never race
+/// each other (a concurrent run flips `applyingRemote` mid-loop and silently
+/// aborts the other run's key loop)
+Future<void> _reconcileInFlight = Future.value();
+Timer? _retryTimer;
+
+/// while the sync is incomplete, keep retrying every 30 s — flaky-DNS windows
+/// come and go, and the app should heal on its own without user action
+void _scheduleRetryLoop() {
+  _retryTimer?.cancel();
+  _retryTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+    final auth = Stores.I.auth;
+    if (auth.status != SyncStatus.signedIn || auth.syncError == null) {
+      timer.cancel();
+      return;
+    }
+    final user = auth.user;
+    if (user != null) resync();
+    if (timer.tick > 120) timer.cancel(); // give up after ~1 h of failures
+  });
+}
+Future<void> reconcile(AuthUser user) {
+  return _reconcileInFlight = _reconcileInFlight
+      .then((_) => _runReconcile(user))
+      .whenComplete(() => _reconcileInFlight = Future.value());
+}
+
+Future<void> _runReconcile(AuthUser user) async {
   applyingRemote = true;
   final auth = Stores.I.auth;
   try {
-    for (final entry in _keys.entries) {
-      final ops = entry.value;
-      // load from the db first…
-      Map<String, dynamic>? remote;
-      var observedCloud = false; // 404 (empty cloud) counts as observed
-      try {
-        final docId = await snapshotDocId(user.id, _collectionFor(entry.key), entry.key);
-        final doc = await databases.getDocument(
-          databaseId: kDatabaseId,
-          collectionId: _collectionFor(entry.key),
-          documentId: docId,
-        );
-        remote = doc.data;
-        observedCloud = true;
-      } on AppwriteException catch (e) {
-        remote = null;
-        observedCloud = e.code == 404;
-      } catch (_) {
-        remote = null;
-        observedCloud = false; // offline etc. — cloud state unknown
+    // flaky networks kill individual requests — retry every key that wasn't
+    // observed until all stores are covered or the attempts run out
+    var remaining = _keys.keys.toList();
+    for (var attempt = 0; attempt < 3 && remaining.isNotEmpty; attempt++) {
+      if (attempt > 0) await Future.delayed(const Duration(milliseconds: 1500));
+      final failed = <String>[];
+      for (final key in remaining) {
+        if (!await _observeAndReconcileKey(user, key)) failed.add(key);
       }
-      if (observedCloud) Stores.I.syncMeta.markLoaded(entry.key);
+      remaining = failed;
+    }
 
-      // …unless this device holds local edits that never made it up
-      final dirtyAt = Stores.I.syncMeta.dirtyAt[entry.key];
-      final remoteUpdatedAt = (remote?['updatedAt'] as num?)?.toInt() ?? 0;
-      final hasUnsyncedEdits =
-          dirtyAt != null && (remote == null || dirtyAt > remoteUpdatedAt);
-
-      if (remote != null && !hasUnsyncedEdits) {
-        ops.apply(remote);
-        Stores.I.syncMeta.clearDirty(entry.key);
-        continue;
-      }
-      if (remote == null && ops.isEmpty()) continue;
-      // write afterwards: unsynced edits, or fresh local data with no snapshot yet
-      await _pushSnapshot(user, entry.key);
+    if (remaining.isNotEmpty) {
+      auth.setSyncError(
+          'sync incomplete — ${remaining.join(", ")} could not be loaded; check your connection and tap Sync now');
+      _scheduleRetryLoop();
+      return;
     }
 
     // decks reconcile: fresh device loads everything, otherwise merge per deck
@@ -518,6 +605,38 @@ Future<void> reconcile(AuthUser user) async {
   }
 }
 
+/* ---------------- session persistence ----------------
+ * The Dart SDK's cookie jar keeps the session in memory only on this setup —
+ * without this, every cold app start is signed out and nothing ever syncs.
+ * The secret is device-local (same trust level as the browser cookie). */
+
+const _kSessionSecretKey = 'semester.appwritesession';
+const _kUserIdKey = 'semester.appwriteuserid';
+const _kUserEmailKey = 'semester.appwriteuseremail';
+
+/// signed-in identity, persisted alongside the session secret so the app can
+/// start optimistically even before the network confirms the session
+String? _storedUserId;
+String? _storedUserEmail;
+
+Future<void> _persistUserId(AuthUser user) async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString(_kUserIdKey, user.id);
+  await prefs.setString(_kUserEmailKey, user.email);
+  _storedUserId = user.id;
+  _storedUserEmail = user.email;
+}
+
+Future<void> _persistSessionSecret(String secret) async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString(_kSessionSecretKey, secret);
+}
+
+Future<void> _clearSessionSecret() async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.remove(_kSessionSecretKey);
+}
+
 /// restores the Appwrite session (if any) and reconciles — run once on startup
 Future<void> initSync() async {
   final auth = Stores.I.auth;
@@ -527,10 +646,52 @@ Future<void> initSync() async {
   }
   auth.setAuth(null, SyncStatus.loading);
 
-  final user = await getCurrentUser();
+  // restore the persisted session (setSession adds the X-Appwrite-Session header)
+  final prefs = await SharedPreferences.getInstance();
+  final savedSecret = prefs.getString(_kSessionSecretKey);
+  _storedUserId = prefs.getString(_kUserIdKey);
+  _storedUserEmail = prefs.getString(_kUserEmailKey);
+  debugPrint('[sync] init: stored session secret present: ${savedSecret != null}');
+  if (savedSecret != null && savedSecret.isNotEmpty) {
+    appwriteClient.setSession(savedSecret);
+  }
+
+  // distinguish "no valid session" (401) from network failures — a flaky DNS
+  // window at startup must not sign the app out
+  AuthUser? user;
+  Object? lastError;
+  for (var attempt = 0; attempt < 4; attempt++) {
+    try {
+      user = await getCurrentUserStrict();
+      lastError = null;
+      break;
+    } on AppwriteException catch (e) {
+      if (e.code == 401) {
+        lastError = null; // genuinely no valid session
+        break;
+      }
+      lastError = e;
+    } catch (e) {
+      lastError = e;
+    }
+    if (attempt < 3) {
+      await Future.delayed(Duration(seconds: 3 * (attempt + 1)));
+    }
+  }
+
+  if (user == null && lastError != null && (savedSecret?.isNotEmpty ?? false)) {
+    // network failed with a stored session — stay signed in optimistically
+    // using the persisted identity; reconcile retries will surface errors
+    debugPrint('[sync] init: network failed, optimistic sign-in');
+    user = AuthUser(_storedUserId ?? '', _storedUserEmail ?? '', _storedUserEmail ?? '');
+  }
+
   if (user == null) {
     auth.setAuth(null, SyncStatus.signedOut);
     return;
+  }
+  if (_storedUserId == null) {
+    await _persistUserId(user);
   }
   auth.setAuth(user, SyncStatus.signedIn);
   _subscribeStores();
@@ -549,7 +710,11 @@ Future<void> initSync() async {
 }
 
 Future<void> signIn(String email, String password) async {
-  await account.createEmailPasswordSession(email: email, password: password);
+  final session = await account.createEmailPasswordSession(email: email, password: password);
+  if (session.secret.isNotEmpty) {
+    await _persistSessionSecret(session.secret);
+    appwriteClient.setSession(session.secret);
+  }
   final user = await getCurrentUser();
   if (user == null) {
     // belt & suspenders failed — the session exists but the profile doesn't load
@@ -557,6 +722,7 @@ Future<void> signIn(String email, String password) async {
     _subscribeStores();
     return;
   }
+  await _persistUserId(user);
   Stores.I.auth.setAuth(user, SyncStatus.signedIn);
   _subscribeStores();
   _startRealtime(user);
@@ -575,6 +741,12 @@ Future<void> signOut() async {
   } catch (_) {}
   _stopRealtime();
   _lastPushedAt.clear();
+  await _clearSessionSecret();
+  final p2 = await SharedPreferences.getInstance();
+  await p2.remove(_kUserIdKey);
+  await p2.remove(_kUserEmailKey);
+  _storedUserId = null;
+  _storedUserEmail = null;
   invalidateJwtCache();
   Stores.I.auth.setAuth(null, SyncStatus.signedOut);
 }

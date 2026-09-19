@@ -32,14 +32,20 @@ final Storage storage = Storage(appwriteClient);
 bool get appwriteConfigured =>
     kAppwriteEndpoint.isNotEmpty && kAppwriteProjectId.isNotEmpty;
 
+/// returns the user or throws — callers distinguish "no valid session"
+/// (401) from network failures (SocketException etc.)
+Future<AuthUser> getCurrentUserStrict() async {
+  final user = await account.get();
+  return AuthUser(
+    user.$id,
+    user.email,
+    user.name.isNotEmpty ? user.name : user.email,
+  );
+}
+
 Future<AuthUser?> getCurrentUser() async {
   try {
-    final user = await account.get();
-    return AuthUser(
-      user.$id,
-      user.email,
-      user.name.isNotEmpty ? user.name : user.email,
-    );
+    return await getCurrentUserStrict();
   } catch (_) {
     return null;
   }
@@ -50,7 +56,9 @@ int _cachedJwtAt = 0;
 
 /// Authorization header carrying a short-lived Appwrite JWT (cached ~10 min),
 /// used to authenticate app → Semester-server API calls.
-Future<Map<String, String>> getAuthHeaders() async {
+/// short-lived Appwrite JWT for REST calls against the Appwrite server itself
+/// (cached ~10 min); null when no session or offline
+Future<String?> getJwt() async {
   try {
     if (_cachedJwt == null ||
         DateTime.now().millisecondsSinceEpoch - _cachedJwtAt > 10 * 60 * 1000) {
@@ -58,10 +66,16 @@ Future<Map<String, String>> getAuthHeaders() async {
       _cachedJwt = jwt.jwt;
       _cachedJwtAt = DateTime.now().millisecondsSinceEpoch;
     }
-    return {'authorization': 'Bearer $_cachedJwt'};
+    return _cachedJwt;
   } catch (_) {
-    return {};
+    return null;
   }
+}
+
+Future<Map<String, String>> getAuthHeaders() async {
+  final jwt = await getJwt();
+  if (jwt == null) return {};
+  return {'authorization': 'Bearer $jwt'};
 }
 
 void invalidateJwtCache() {
