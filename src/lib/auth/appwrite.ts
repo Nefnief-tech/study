@@ -90,6 +90,7 @@ export async function getAuthHeaders(): Promise<Record<string, string>> {
 export async function getAppwriteJwtHeaders(forceRefresh = false): Promise<Record<string, string>> {
   const jwt = await getAppwriteJwt(forceRefresh);
   return {
+    "X-Appwrite-Project": PROJECT_ID,
     "X-Appwrite-JWT": jwt,
     authorization: `Bearer ${jwt}`,
     "content-type": "application/json",

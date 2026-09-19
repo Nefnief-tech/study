@@ -457,7 +457,10 @@ async function rowFetch(path: string, init: RequestInit): Promise<Response> {
 }
 
 async function restListRows(table: string, userId: string): Promise<Array<RowData & { $id: string }>> {
-  const queries = JSON.stringify([`equal("userId","${userId}")`, "limit(100)"]);
+  const queries = JSON.stringify([
+    { method: "equal", attribute: "userId", values: [userId] },
+    { method: "limit", values: [100] },
+  ]);
   const res = await rowFetch(`${rowsUri(table)}?queries=${encodeURIComponent(queries)}`, {});
   if (!res.ok) throw new Error(`list ${table} → ${res.status}`);
   const json = (await res.json()) as { rows?: Array<RowData & { $id: string }> };
@@ -520,7 +523,7 @@ async function syncRows(storeKey: string, user: AuthUser) {
     const digest = await rowDigest(entity, def);
     currentDigests[entity.id] = digest;
     if (digests[entity.id] !== digest) {
-      await restUpsertRow(def.table, entity.id, def.toRow(entity), user.id);
+      await restUpsertRow(def.table, entity.id, { ...def.toRow(entity), userId: user.id }, user.id);
       // record the pushed digest — otherwise the entity re-pushes on every
       // sync, each push echoing a realtime event → endless churn
       digests[entity.id] = digest;
@@ -807,6 +810,13 @@ export async function initSync() {
   });
 
   const savedSecret = await loadSessionSecret();
+  // The web SDK auto-attaches its own localStorage fallback session on every
+  // call. A stale one from a previously signed-in account mixes identities —
+  // JWTs get minted for the old session while row queries use the current
+  // user → cross-user 401s. Our own secret (setSession) is authoritative.
+  try {
+    localStorage.removeItem("cookieFallback");
+  } catch {}
   if (savedSecret) appwriteClient.setSession(savedSecret);
 
   const user = await getCurrentUser();
@@ -847,5 +857,8 @@ export async function signOut() {
   if (account) await account.deleteSession("current").catch(() => {});
   stopRealtime();
   await clearSession();
+  try {
+    localStorage.removeItem("cookieFallback");
+  } catch {}
   useAuthStore.getState().setAuth(null, "signed-out");
 }
