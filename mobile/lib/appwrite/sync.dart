@@ -282,19 +282,23 @@ final _rowAdapters = <_RowAdapter>[
       'sentAt': m['sentAt'] ?? 0,
     },
     fromRow: (id, row) {
+      // map-based adapter: toRow()/upsert() below read map keys, and the pull
+      // phase feeds fromRow()'s result straight back into both
       final sourcesJson = row['sources'] as String?;
       final sources = sourcesJson == null
           ? null
           : ((jsonDecode(sourcesJson) as List?) ?? []).whereType<String>().toList();
-      return ChatMessage(
-        id: id,
-        role: (row['role'] as String?) == 'user' ? 'user' : 'assistant',
-        content: (row['content'] as String?) ?? '',
-        sources: sources,
-        sentAt: (row['sentAt'] as num?)?.toInt(),
-      );
+      return {
+        'id': id,
+        'role': (row['role'] as String?) == 'user' ? 'user' : 'assistant',
+        'content': (row['content'] as String?) ?? '',
+        'sources': sources,
+        'sentAt': (row['sentAt'] as num?)?.toInt(),
+      };
     },
-    upsert: (m) => _room.upsertChatMessage(m),
+    upsert: (m) => _room.upsertChatMessage(
+      ChatMessage.fromJson(Map<String, dynamic>.from(m as Map)),
+    ),
     remove: (id) => _room.removeChatMessage(id),
   ),
   _RowAdapter(
@@ -395,18 +399,20 @@ final _rowAdapters = <_RowAdapter>[
       'info': e['info'] ?? '',
       'cancelled': e['cancelled'] ?? false,
     },
-    fromRow: (id, row) => PortalSub(
-      date: (row['date'] as String?) ?? '',
-      weekday: (row['weekday'] as String?) ?? '',
-      period: (row['period'] as String?) ?? '',
-      course: (row['course'] as String?) ?? '',
-      courseOld: (row['courseOld'] as String?)?.isEmpty == false ? row['courseOld'] as String : null,
-      substitute: (row['substitute'] as String?) ?? '',
-      room: (row['room'] as String?) ?? '',
-      info: (row['info'] as String?) ?? '',
-      cancelled: row['cancelled'] == true,
-    ),
-    upsert: (e) => _portal.upsertSub(e),
+    fromRow: (id, row) => {
+      // map-based adapter: toRow()/upsert() below read map keys, and the pull
+      // phase feeds fromRow()'s result straight back into both
+      'date': (row['date'] as String?) ?? '',
+      'weekday': (row['weekday'] as String?) ?? '',
+      'period': (row['period'] as String?) ?? '',
+      'course': (row['course'] as String?) ?? '',
+      'courseOld': (row['courseOld'] as String?)?.isEmpty == false ? row['courseOld'] as String : null,
+      'substitute': (row['substitute'] as String?) ?? '',
+      'room': (row['room'] as String?) ?? '',
+      'info': (row['info'] as String?) ?? '',
+      'cancelled': row['cancelled'] == true,
+    },
+    upsert: (e) => _portal.upsertSub(PortalSub.fromJson(Map<String, dynamic>.from(e as Map))),
     remove: (id) => _portal.removeSub(id),
   ),
   _RowAdapter(
