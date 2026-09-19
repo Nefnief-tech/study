@@ -24,7 +24,7 @@ There is no iOS folder yet — `flutter create --platforms ios .` adds it on a M
 | `lib/store/*.ts` (zustand)      | `stores/*.dart` (ChangeNotifier + SharedPreferences, same `semester.*` keys, same zustand-persist envelope) |
 | `lib/auth/appwrite.ts`          | `appwrite/client.dart` — same endpoint/project, JWT cache for API calls |
 | `lib/auth/sync.ts`              | `appwrite/sync.dart` — identical doc IDs (`sha256(userId:collection:key)`, 32 hex chars), identical payload shapes, same dirty-flag "cloud wins on load" model, 1.2 s debounced pushes, per-deck documents with deletion tracking |
-| `lib/store/*.ts` row sync       | `appwrite/sync.dart` row adapters — subjects/todos/homeworks/grades/events live as **one structured row per entity** in Appwrite `tablesdb` tables (rowId = entity UUID, `deleted` tombstone, sha256 content digests, pending-local-wins merge). Only timetable / study-room / chats / decks remain JSON snapshot blobs. Schema: `../scripts/appwrite-structured-schema.mjs` |
+| `lib/store/*.ts` row sync       | `appwrite/sync.dart` row adapters — subjects/todos/homeworks/grades/events live as **one structured row per entity** in Appwrite `tablesdb` tables (rowId = entity UUID, `deleted` tombstone, sha256 content digests, pending-local-wins merge). Timetable entries, chat messages, decks, flashcards, selection and the portal plan are rows too. Schema: `../scripts/appwrite-structured-schema.mjs` |
 | `lib/server/*` + `app/api/*`    | `services/api.dart` — reuses the deployed web server (AI key + portal scraper stay server-side) |
 | `components/ui/*`               | `widgets/*` (chips, badges, buttons, sheets, subject select) |
 | `app/*` pages                   | `pages/*`                                          |

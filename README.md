@@ -27,10 +27,11 @@ and afterwards each local change is pushed (debounced ~1.2s). Subjects, todos, h
 grades and events sync as **structured rows** — one row per entity in Appwrite `tablesdb`
 tables (`semester/subjects`, `todos`, `homeworks`, `grades`, `events`; rowId = entity UUID,
 `deleted` tombstone, sha256 content digests, pending-local edits win until the push lands).
-Timetable, study room, chats and decks remain JSON snapshot documents, synced the same way
-as before. Provision the row tables once with
+Timetable entries, chat messages, decks, flashcards, the study-room selection and the
+mirrored portal plan are rows too — the whole sync is structured, no JSON blobs.
+Provision the row tables once with
 `APPWRITE_PROJECT_ID=… APPWRITE_API_KEY=… node scripts/appwrite-structured-schema.mjs`
-and migrate existing snapshot data with `scripts/appwrite-migrate-blobs-to-rows.mjs`.
+and migrate old snapshot documents with `scripts/appwrite-migrate-documents-to-rows.mjs`.
 Offline work is never silently clobbered: local edits whose push hasn't succeeded yet keep
 a dirty flag (`semester.syncmeta`) and win over the cloud on the next load. Sign-out keeps
 data on the device. Without Appwrite env vars the app stays local-only.
