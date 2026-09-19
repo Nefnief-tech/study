@@ -472,21 +472,14 @@ async function restListRows(table: string, userId: string): Promise<Array<RowDat
 }
 
 async function restUpsertRow(table: string, rowId: string, data: RowData, userId: string) {
-  const body = JSON.stringify({ data });
-  let res = await rowFetch(rowsUri(table, rowId), {
-    method: "PATCH",
-    body,
+  // PUT = create-or-update in one request (no 404 probe, no create race)
+  const res = await rowFetch(rowsUri(table, rowId), {
+    method: "PUT",
+    body: JSON.stringify({
+      data,
+      permissions: [`read("user:${userId}")`, `write("user:${userId}")`],
+    }),
   });
-  if (res.status === 404) {
-    res = await rowFetch(rowsUri(table), {
-      method: "POST",
-      body: JSON.stringify({
-        rowId,
-        data,
-        permissions: [`read("user:${userId}")`, `write("user:${userId}")`],
-      }),
-    });
-  }
   if (!res.ok) {
     throw new Error(`upsert ${table}/${rowId} → ${res.status}: ${(await res.text()).slice(0, 120)}`);
   }
