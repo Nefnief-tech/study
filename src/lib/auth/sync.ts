@@ -291,6 +291,15 @@ async function pushSnapshot(userId: string, key: string) {
     if (!ops.omitKey) attributes.key = key;
     const payload = { data: attributes };
 
+    // baseline rule: a device that has never observed this store's cloud state
+    // (fresh install, reconcile failed offline) must not push — it could wipe
+    // data it has never seen. Dirty stays; the next reconcile sets the baseline
+    // and this change is re-evaluated against the loaded cloud state.
+    if (GUARDED_KEYS.has(key) && !useSyncMetaStore.getState().isLoaded(key)) {
+      setSyncing(false);
+      return;
+    }
+
     if (GUARDED_KEYS.has(key) && (await wouldWipeRemote(userId, key, attributes))) {
       // keep the cloud copy; clear the dirty flag so we don't retry forever —
       // the next reconcile will pull the cloud state back onto this device
@@ -467,6 +476,7 @@ async function reconcile(user: AuthUser) {
     for (const [key, ops] of Object.entries(KEYS)) {
       // load from the db first…
       let remote: Record<string, unknown> | null = null;
+      let observedCloud = false; // 404 (empty cloud) counts as observed
       try {
         const docId = await snapshotDocId(user.id, collectionFor(key), key);
         remote = (await databases!.getDocument(
@@ -474,9 +484,12 @@ async function reconcile(user: AuthUser) {
           collectionFor(key),
           docId,
         )) as unknown as Record<string, unknown>;
-      } catch {
+        observedCloud = true;
+      } catch (e) {
         remote = null;
+        observedCloud = (e as { code?: number }).code === 404;
       }
+      if (observedCloud) useSyncMetaStore.getState().markLoaded(key);
 
       // …unless this device holds local edits that never made it up
       const dirtyAt = useSyncMetaStore.getState().dirtyAt[key];

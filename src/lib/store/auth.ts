@@ -41,15 +41,23 @@ export const useAuthStore = create<AuthState>()((set) => ({
  */
 interface SyncMetaState {
   dirtyAt: Record<string, number>;
+  /** keys whose cloud state this device has observed — pushes require this */
+  loaded: string[];
   markDirty: (key: string, at: number) => void;
+  markLoaded: (key: string) => void;
+  isLoaded: (key: string) => boolean;
   clearDirty: (key: string) => void;
 }
 
 export const useSyncMetaStore = create<SyncMetaState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       dirtyAt: {},
+      loaded: [],
       markDirty: (key, at) => set((s) => ({ dirtyAt: { ...s.dirtyAt, [key]: at } })),
+      markLoaded: (key) =>
+        set((s) => (s.loaded.includes(key) ? s : { loaded: [...s.loaded, key] })),
+      isLoaded: (key) => get().loaded.includes(key),
       clearDirty: (key) =>
         set((s) => {
           const dirtyAt = { ...s.dirtyAt };
@@ -59,8 +67,9 @@ export const useSyncMetaStore = create<SyncMetaState>()(
     }),
     {
       name: "semester.syncmeta",
-      version: 2,
-      migrate: () => ({ dirtyAt: {} }),
+      version: 3,
+      // v2 → v3: an upgrade starts without baselines; the next reconcile sets them
+      migrate: (state) => ({ ...(state as object), loaded: [] }),
     },
   ),
 );

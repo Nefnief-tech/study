@@ -264,6 +264,15 @@ Future<void> _pushSnapshot(AuthUser user, String key) async {
     if (!ops.omitKey) attributes['key'] = key;
     final payload = {'data': attributes};
 
+    // baseline rule: a device that has never observed this store's cloud state
+    // (fresh install, reconcile failed offline) must not push — it could wipe
+    // data it has never seen. Dirty stays; the next reconcile sets the baseline
+    // and this change is re-evaluated against the loaded cloud state.
+    if (_guardedKeys.contains(key) && !Stores.I.syncMeta.isLoaded(key)) {
+      auth.setSyncing(false);
+      return;
+    }
+
     if (_guardedKeys.contains(key) && await _wouldWipeRemote(user, key, attributes)) {
       // keep the cloud copy; clear the dirty flag so we don't retry forever —
       // the next reconcile will pull the cloud state back onto this device
@@ -463,6 +472,7 @@ Future<void> reconcile(AuthUser user) async {
       final ops = entry.value;
       // load from the db first…
       Map<String, dynamic>? remote;
+      var observedCloud = false; // 404 (empty cloud) counts as observed
       try {
         final docId = await snapshotDocId(user.id, _collectionFor(entry.key), entry.key);
         final doc = await databases.getDocument(
@@ -471,9 +481,15 @@ Future<void> reconcile(AuthUser user) async {
           documentId: docId,
         );
         remote = doc.data;
+        observedCloud = true;
+      } on AppwriteException catch (e) {
+        remote = null;
+        observedCloud = e.code == 404;
       } catch (_) {
         remote = null;
+        observedCloud = false; // offline etc. — cloud state unknown
       }
+      if (observedCloud) Stores.I.syncMeta.markLoaded(entry.key);
 
       // …unless this device holds local edits that never made it up
       final dirtyAt = Stores.I.syncMeta.dirtyAt[entry.key];
@@ -606,10 +622,12 @@ void _onRealtimeEvent(RealtimeMessage msg) {
   try {
     final key = doc['key'] as String?;
     if (key != null && _keys.containsKey(key)) {
+      Stores.I.syncMeta.markLoaded(key); // the event IS the cloud state
       _keys[key]!.apply(doc);
     } else if (doc['deckId'] is String) {
       _room.upsertDeck(_docToDeck(doc));
     } else if (doc['messages'] is String) {
+      Stores.I.syncMeta.markLoaded('chats');
       _keys['chats']!.apply(doc);
     }
   } finally {

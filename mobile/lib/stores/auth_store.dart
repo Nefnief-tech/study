@@ -71,13 +71,18 @@ class SyncMetaStore extends PersistedStore {
   String get storageKey => 'semester.syncmeta';
 
   @override
-  int get storageVersion => 2;
+  int get storageVersion => 3;
 
   Map<String, int> _dirtyAt = {};
   Map<String, int> get dirtyAt => Map.unmodifiable(_dirtyAt);
 
+  /// keys whose cloud state this device has successfully observed since the
+  /// last storage clear — a device may only push stores it has loaded
+  Set<String> _loaded = {};
+  bool isLoaded(String key) => _loaded.contains(key);
+
   @override
-  Map<String, dynamic> persistedState() => {'dirtyAt': _dirtyAt};
+  Map<String, dynamic> persistedState() => {'dirtyAt': _dirtyAt, 'loaded': _loaded.toList()};
 
   @override
   void hydrateFrom(Map<String, dynamic> state) {
@@ -85,6 +90,14 @@ class SyncMetaStore extends PersistedStore {
     _dirtyAt = raw is Map
         ? raw.map((k, v) => MapEntry('$k', (v as num).toInt()))
         : {};
+    // v2 → v3: an upgrade starts without baselines; the next reconcile sets them
+    _loaded = ((state['loaded'] as List?) ?? []).map((e) => e as String).toSet();
+  }
+
+  void markLoaded(String key) {
+    if (_loaded.contains(key)) return;
+    _loaded = {..._loaded, key};
+    persist();
   }
 
   void markDirty(String key, int at) {
