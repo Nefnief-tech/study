@@ -536,6 +536,16 @@ Future<void> initSync() async {
   _subscribeStores();
   _startRealtime(user);
   await reconcile(user);
+
+  // flaky networks: if the first reconcile failed (DNS, WiFi handoff…), keep
+  // retrying — an empty-looking app that never pulls is worse than a delay
+  for (var attempt = 0;
+      attempt < 4 && auth.status == SyncStatus.signedIn && auth.syncError != null;
+      attempt++) {
+    await Future.delayed(const Duration(seconds: 10));
+    if (auth.status != SyncStatus.signedIn) return;
+    await reconcile(user);
+  }
 }
 
 Future<void> signIn(String email, String password) async {
@@ -646,14 +656,14 @@ Future<void> resync() async {
 }
 
 /// manual push of everything (used by the "Sync now" button)
+/// "Sync now" — full round-trip: pull the cloud state (reconcile) and push
+/// whatever is still unsynced locally. Also the manual retry for a reconcile
+/// that failed on a flaky connection.
 Future<void> syncNow() async {
   final auth = Stores.I.auth;
   final user = auth.user;
   if (auth.status != SyncStatus.signedIn || user == null) return;
-  for (final key in _keys.keys) {
-    await _pushSnapshot(user, key);
-  }
-  await _syncDecks(user);
+  await reconcile(user);
 }
 
 /// Mirrors the fetched substitute plan (plan ONLY — portal credentials never

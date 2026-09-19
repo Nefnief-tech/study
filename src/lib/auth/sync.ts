@@ -611,10 +611,10 @@ export async function mirrorPortal(plan: PortalPlanJson) {
   }
 }
 
-/** manual push of everything (used by the "Sync now" button) */
+/** manual "Sync now" — full round-trip: pull the cloud state (reconcile) and
+ *  push whatever is still unsynced locally */
 export async function syncNow() {
   const { user, status } = useAuthStore.getState();
   if (status !== "signed-in" || !user) return;
-  for (const key of Object.keys(KEYS)) await pushSnapshot(user.id, key);
-  await syncDecks(user);
+  await reconcile(user);
 }
