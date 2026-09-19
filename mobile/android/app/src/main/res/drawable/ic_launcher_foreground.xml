@@ -1,0 +1,29 @@
+<!-- Semester mark: cream asterisk/star on the green background layer.
+     Viewport is the 108dp adaptive-icon canvas; the mark is scaled to sit
+     inside the 66dp safe-zone circle (original grid: public/icon.svg 512). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group>
+        <path
+            android:pathData="M54,32 L54,76"
+            android:strokeColor="#F5F2EA"
+            android:strokeWidth="5.9"
+            android:strokeLineCap="round" />
+        <path
+            android:pathData="M34.7,43 L73.3,65"
+            android:strokeColor="#F5F2EA"
+            android:strokeWidth="5.9"
+            android:strokeLineCap="round" />
+        <path
+            android:pathData="M34.7,65 L73.3,43"
+            android:strokeColor="#F5F2EA"
+            android:strokeWidth="5.9"
+            android:strokeLineCap="round" />
+        <path
+            android:pathData="M54,54 m-6.9,0 a6.9,6.9 0 1,1 13.8,0 a6.9,6.9 0 1,1 -13.8,0"
+            android:fillColor="#F5F2EA" />
+    </group>
+</vector>

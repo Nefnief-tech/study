@@ -39,7 +39,10 @@ class _TimetablePageState extends State<TimetablePage> {
     // auto-fetch on first build when enabled and credentials are stored
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final p = Stores.I.portal;
-      if (p.autoFetch && p.baseUrl.isNotEmpty && p.username.isNotEmpty && p.password.isNotEmpty) {
+      if (p.autoFetch &&
+          p.baseUrl.isNotEmpty &&
+          p.username.isNotEmpty &&
+          p.password.isNotEmpty) {
         _fetchNow();
       }
     });
@@ -47,7 +50,10 @@ class _TimetablePageState extends State<TimetablePage> {
 
   Future<void> _fetchNow() async {
     final portal = Stores.I.portal;
-    if (portal.error == null && portal.data != null && portal.lastFetched != null) return;
+    if (portal.error == null &&
+        portal.data != null &&
+        portal.lastFetched != null)
+      return;
     await doPortalFetch(context);
   }
 
@@ -90,8 +96,12 @@ class _TimetablePageState extends State<TimetablePage> {
         final relevantSubs = portal.data == null
             ? <PortalSub>[]
             : portal.data!.allEntries
-                .where((s) => portal.data!.courses.any((c) => c.trim() == s.course.trim()))
-                .toList();
+                  .where(
+                    (s) => portal.data!.courses.any(
+                      (c) => c.trim() == s.course.trim(),
+                    ),
+                  )
+                  .toList();
 
         return SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
@@ -100,7 +110,8 @@ class _TimetablePageState extends State<TimetablePage> {
             children: [
               PageHeader(
                 title: 'Timetable',
-                subtitle: 'paste your timetable as JSON — formatted automatically',
+                subtitle:
+                    'paste your timetable as JSON — formatted automatically',
                 trailing: entries.isNotEmpty
                     ? Row(
                         mainAxisSize: MainAxisSize.min,
@@ -109,19 +120,29 @@ class _TimetablePageState extends State<TimetablePage> {
                             onPressed: () => _openJsonSheet(context, entries),
                             child: const Row(
                               mainAxisSize: MainAxisSize.min,
-                              children: [Icon(Icons.upload_outlined, size: 15), SizedBox(width: 6), Text('Edit JSON')],
+                              children: [
+                                Icon(Icons.upload_outlined, size: 15),
+                                SizedBox(width: 6),
+                                Text('Edit JSON'),
+                              ],
                             ),
                           ),
                           const SizedBox(width: 8),
                           SemGhostButton(
                             onPressed: () async {
-                              final ok = await confirmDialog(context, 'Clear the whole timetable?',
-                                  title: 'Clear timetable');
+                              final ok = await confirmDialog(
+                                context,
+                                'Clear the whole timetable?',
+                                title: 'Clear timetable',
+                              );
                               if (ok) Stores.I.timetable.clear();
                             },
                             foreground: sem.marker,
                             border: sem.marker.withValues(alpha: 0.4),
-                            child: const Icon(Icons.layers_clear_outlined, size: 16),
+                            child: const Icon(
+                              Icons.layers_clear_outlined,
+                              size: 16,
+                            ),
                           ),
                         ],
                       )
@@ -143,25 +164,43 @@ class _TimetablePageState extends State<TimetablePage> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Container(
-                            width: 10, height: 10,
-                            decoration: BoxDecoration(color: sem.marker, shape: BoxShape.circle)),
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            color: sem.marker,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
                         const SizedBox(width: 5),
-                        Text('cancelled', style: Theme.of(context).textTheme.labelSmall),
+                        Text(
+                          'cancelled',
+                          style: Theme.of(context).textTheme.labelSmall,
+                        ),
                       ],
                     ),
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Container(
-                            width: 10, height: 10,
-                            decoration: BoxDecoration(color: sem.amber, shape: BoxShape.circle)),
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            color: sem.amber,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
                         const SizedBox(width: 5),
-                        Text('substituted', style: Theme.of(context).textTheme.labelSmall),
+                        Text(
+                          'substituted',
+                          style: Theme.of(context).textTheme.labelSmall,
+                        ),
                       ],
                     ),
                     if (relevantSubs.isNotEmpty)
-                      Text('· ${relevantSubs.length} for your courses',
-                          style: Theme.of(context).textTheme.labelSmall),
+                      Text(
+                        '· ${relevantSubs.length} for your courses',
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
                   ],
                 ),
                 const SizedBox(height: 10),
@@ -189,11 +228,13 @@ class _TimetablePageState extends State<TimetablePage> {
                                 _cellHead(
                                   context,
                                   width: 76,
-                                  child: Text('PD',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .labelSmall!
-                                          .copyWith(letterSpacing: 1.2)),
+                                  child: Text(
+                                    'PD',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelSmall!
+                                        .copyWith(letterSpacing: 1.2),
+                                  ),
                                 ),
                                 for (final d in days)
                                   _cellHead(
@@ -201,13 +242,19 @@ class _TimetablePageState extends State<TimetablePage> {
                                     flex: true,
                                     highlight: d == todayCol,
                                     child: Row(
-                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
                                       children: [
                                         Text(
                                           d,
-                                          style: Theme.of(context).textTheme.titleMedium!.copyWith(
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .titleMedium!
+                                              .copyWith(
                                                 fontWeight: FontWeight.w600,
-                                                color: d == todayCol ? sem.accent : sem.ink,
+                                                color: d == todayCol
+                                                    ? sem.accent
+                                                    : sem.ink,
                                               ),
                                         ),
                                         if (d == todayCol) ...[
@@ -217,7 +264,10 @@ class _TimetablePageState extends State<TimetablePage> {
                                             style: Theme.of(context)
                                                 .textTheme
                                                 .labelSmall!
-                                                .copyWith(fontSize: 8, letterSpacing: 1),
+                                                .copyWith(
+                                                  fontSize: 8,
+                                                  letterSpacing: 1,
+                                                ),
                                           ),
                                         ],
                                       ],
@@ -225,47 +275,74 @@ class _TimetablePageState extends State<TimetablePage> {
                                   ),
                               ],
                             ),
-                            // body rows
+                            // body rows — IntrinsicHeight gives the stretch
+                            // Row a bounded height (a stretch Row inside the
+                            // scroll views would otherwise force infinite
+                            // child heights and break the whole layout)
                             for (final p in periods)
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  _cellHead(context, width: 76, box: true,
-                                    child: Column(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        Text('$p',
-                                            style: Theme.of(context).textTheme.labelLarge!.copyWith(
-                                                  color: sem.ink, fontWeight: FontWeight.w600)),
-                                        if (periodTime[p] != null)
+                              IntrinsicHeight(
+                                child: Row(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    _cellHead(
+                                      context,
+                                      width: 76,
+                                      box: true,
+                                      child: Column(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: [
                                           Text(
-                                            periodTime[p]!.split(' - ').first,
+                                            '$p',
                                             style: Theme.of(context)
                                                 .textTheme
-                                                .labelSmall!
-                                                .copyWith(fontSize: 8),
+                                                .labelLarge!
+                                                .copyWith(
+                                                  color: sem.ink,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
                                           ),
-                                      ],
-                                    ),
-                                  ),
-                                  for (final d in days)
-                                    _cell(
-                                      context,
-                                      flex: true,
-                                      highlight: d == todayCol,
-                                      cancelled: _cellCancelled(relevantSubs, d, p, entries),
-                                      substituted: _cellSubstituted(relevantSubs, d, p, entries),
-                                      child: _cellContent(
-                                        context,
-                                        d,
-                                        p,
-                                        entries,
-                                        relevantSubs,
-                                        colorsByName,
+                                          if (periodTime[p] != null)
+                                            Text(
+                                              periodTime[p]!.split(' - ').first,
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .labelSmall!
+                                                  .copyWith(fontSize: 8),
+                                            ),
+                                        ],
                                       ),
                                     ),
-                              ],
-                            ),
+                                    for (final d in days)
+                                      _cell(
+                                        context,
+                                        flex: true,
+                                        highlight: d == todayCol,
+                                        cancelled: _cellCancelled(
+                                          relevantSubs,
+                                          d,
+                                          p,
+                                          entries,
+                                        ),
+                                        substituted: _cellSubstituted(
+                                          relevantSubs,
+                                          d,
+                                          p,
+                                          entries,
+                                        ),
+                                        child: _cellContent(
+                                          context,
+                                          d,
+                                          p,
+                                          entries,
+                                          relevantSubs,
+                                          colorsByName,
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
                           ],
                         ),
                       ),
@@ -280,27 +357,38 @@ class _TimetablePageState extends State<TimetablePage> {
                       "Paste your school's timetable as JSON and it becomes a clean weekly grid. The example shows the exact format.",
                   action: SemPrimaryButton(
                     onPressed: () => _openJsonSheet(context, entries),
-                    child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                      Icon(Icons.upload_outlined, size: 16),
-                      SizedBox(width: 6),
-                      Text('Paste JSON'),
-                    ]),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.upload_outlined, size: 16),
+                        SizedBox(width: 6),
+                        Text('Paste JSON'),
+                      ],
+                    ),
                   ),
                 ),
 
               // substitutions list
               if (relevantSubs.isNotEmpty) ...[
                 const SizedBox(height: 32),
-                Text('Substitutions', style: Theme.of(context).textTheme.headlineSmall),
+                Text(
+                  'Substitutions',
+                  style: Theme.of(context).textTheme.headlineSmall,
+                ),
                 const SizedBox(height: 12),
                 for (final day in portal.data?.days ?? const <PortalDay>[]) ...[
                   () {
-                    final daySubs = relevantSubs.where((s) => s.date == day.date).toList();
+                    final daySubs = relevantSubs
+                        .where((s) => s.date == day.date)
+                        .toList();
                     if (daySubs.isEmpty) return const SizedBox.shrink();
                     return Container(
                       width: double.infinity,
                       margin: const EdgeInsets.only(bottom: 14),
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 14,
+                      ),
                       decoration: BoxDecoration(
                         color: sem.card,
                         border: Border.all(color: sem.line),
@@ -311,7 +399,9 @@ class _TimetablePageState extends State<TimetablePage> {
                         children: [
                           Text(
                             '${day.weekday}., ${day.date}',
-                            style: Theme.of(context).textTheme.labelSmall!.copyWith(fontSize: 11),
+                            style: Theme.of(
+                              context,
+                            ).textTheme.labelSmall!.copyWith(fontSize: 11),
                           ),
                           const SizedBox(height: 8),
                           for (final s in daySubs)
@@ -327,34 +417,57 @@ class _TimetablePageState extends State<TimetablePage> {
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: Wrap(
-                                      crossAxisAlignment: WrapCrossAlignment.center,
+                                      crossAxisAlignment:
+                                          WrapCrossAlignment.center,
                                       spacing: 6,
                                       children: [
                                         if (s.courseOld != null)
                                           Text(
                                             s.courseOld!,
-                                            style: Theme.of(context).textTheme.bodyMedium!.copyWith(
-                                                  color: sem.inkSoft,
-                                                  decoration: TextDecoration.lineThrough,
-                                                ),
-                                          ),
-                                        Text(s.course,
                                             style: Theme.of(context)
                                                 .textTheme
                                                 .bodyMedium!
-                                                .copyWith(fontWeight: FontWeight.w500)),
-                                        if (!s.cancelled && s.substitute.isNotEmpty)
-                                          Text('→ ${s.substitute}',
-                                              style: TextStyle(color: sem.inkSoft)),
+                                                .copyWith(
+                                                  color: sem.inkSoft,
+                                                  decoration: TextDecoration
+                                                      .lineThrough,
+                                                ),
+                                          ),
+                                        Text(
+                                          s.course,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyMedium!
+                                              .copyWith(
+                                                fontWeight: FontWeight.w500,
+                                              ),
+                                        ),
+                                        if (!s.cancelled &&
+                                            s.substitute.isNotEmpty)
+                                          Text(
+                                            '→ ${s.substitute}',
+                                            style: TextStyle(
+                                              color: sem.inkSoft,
+                                            ),
+                                          ),
                                         if (s.room.isNotEmpty)
-                                          Text('room ${s.room}',
-                                              style: Theme.of(context).textTheme.labelSmall),
+                                          Text(
+                                            'room ${s.room}',
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.labelSmall,
+                                          ),
                                         if (s.info.isNotEmpty)
-                                          Text(s.info,
-                                              style: Theme.of(context)
-                                                  .textTheme
-                                                  .bodySmall!
-                                                  .copyWith(fontSize: 11, color: sem.inkSoft)),
+                                          Text(
+                                            s.info,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall!
+                                                .copyWith(
+                                                  fontSize: 11,
+                                                  color: sem.inkSoft,
+                                                ),
+                                          ),
                                       ],
                                     ),
                                   ),
@@ -416,10 +529,10 @@ class _TimetablePageState extends State<TimetablePage> {
         color: cancelled
             ? sem.marker.withValues(alpha: 0.08)
             : substituted
-                ? sem.amber.withValues(alpha: 0.07)
-                : highlight
-                    ? sem.accent.withValues(alpha: 0.06)
-                    : null,
+            ? sem.amber.withValues(alpha: 0.07)
+            : highlight
+            ? sem.accent.withValues(alpha: 0.06)
+            : null,
         border: Border(
           bottom: BorderSide(color: sem.line),
           right: BorderSide(color: sem.line),
@@ -432,22 +545,37 @@ class _TimetablePageState extends State<TimetablePage> {
   }
 
   List<PortalSub> _cellSubsFor(
-      List<PortalSub> subs, String day, int period, List<TimetableEntry> entries) {
+    List<PortalSub> subs,
+    String day,
+    int period,
+    List<TimetableEntry> entries,
+  ) {
     return subs.where((s) {
       if (_portalWeekday[s.weekday] != day) return false;
       if (int.tryParse(s.period) != period) return false;
-      return entries.any((e) =>
-          e.day == day &&
-          e.period == period &&
-          (e.subject.trim() == s.course.trim() || e.teacher?.trim() == s.course.trim()));
+      return entries.any(
+        (e) =>
+            e.day == day &&
+            e.period == period &&
+            (e.subject.trim() == s.course.trim() ||
+                e.teacher?.trim() == s.course.trim()),
+      );
     }).toList();
   }
 
-  bool _cellCancelled(List<PortalSub> subs, String day, int period, List<TimetableEntry> entries) =>
-      _cellSubsFor(subs, day, period, entries).any((s) => s.cancelled);
+  bool _cellCancelled(
+    List<PortalSub> subs,
+    String day,
+    int period,
+    List<TimetableEntry> entries,
+  ) => _cellSubsFor(subs, day, period, entries).any((s) => s.cancelled);
 
-  bool _cellSubstituted(List<PortalSub> subs, String day, int period, List<TimetableEntry> entries) =>
-      _cellSubsFor(subs, day, period, entries).any((s) => !s.cancelled);
+  bool _cellSubstituted(
+    List<PortalSub> subs,
+    String day,
+    int period,
+    List<TimetableEntry> entries,
+  ) => _cellSubsFor(subs, day, period, entries).any((s) => !s.cancelled);
 
   Widget _cellContent(
     BuildContext context,
@@ -458,11 +586,16 @@ class _TimetablePageState extends State<TimetablePage> {
     Map<String, String> colorsByName,
   ) {
     final sem = context.sem;
-    final items = entries.where((e) => e.day == day && e.period == period).toList();
+    final items = entries
+        .where((e) => e.day == day && e.period == period)
+        .toList();
     final cellSubs = _cellSubsFor(relevantSubs, day, period, entries);
 
     if (items.isEmpty && cellSubs.isEmpty) {
-      return Text('—', style: TextStyle(color: sem.inkSoft.withValues(alpha: 0.4)));
+      return Text(
+        '—',
+        style: TextStyle(color: sem.inkSoft.withValues(alpha: 0.4)),
+      );
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -483,20 +616,34 @@ class _TimetablePageState extends State<TimetablePage> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodySmall!.copyWith(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                            ),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ),
                   ],
                 ),
                 if (e.time != null)
-                  Text(e.time!, style: Theme.of(context).textTheme.labelSmall!.copyWith(fontSize: 8)),
+                  Text(
+                    e.time!,
+                    style: Theme.of(
+                      context,
+                    ).textTheme.labelSmall!.copyWith(fontSize: 8),
+                  ),
                 if (e.teacher != null)
-                  Text(e.teacher!, style: Theme.of(context).textTheme.labelSmall!.copyWith(fontSize: 8)),
+                  Text(
+                    e.teacher!,
+                    style: Theme.of(
+                      context,
+                    ).textTheme.labelSmall!.copyWith(fontSize: 8),
+                  ),
                 if (e.room != null)
-                  Text('room ${e.room}',
-                      style: Theme.of(context).textTheme.labelSmall!.copyWith(fontSize: 8)),
+                  Text(
+                    'room ${e.room}',
+                    style: Theme.of(
+                      context,
+                    ).textTheme.labelSmall!.copyWith(fontSize: 8),
+                  ),
               ],
             ),
           ),
@@ -508,9 +655,9 @@ class _TimetablePageState extends State<TimetablePage> {
                   ? 'cancelled · ${s.date.substring(0, 6)}'
                   : '→ ${s.substitute.isEmpty ? '?' : s.substitute}${s.room.isEmpty ? '' : ' · ${s.room}'} · ${s.date.substring(0, 6)}',
               style: Theme.of(context).textTheme.labelSmall!.copyWith(
-                    fontSize: 8.5,
-                    color: toneColor(context, s.cancelled ? Tone.bad : Tone.warn),
-                  ),
+                fontSize: 8.5,
+                color: toneColor(context, s.cancelled ? Tone.bad : Tone.warn),
+              ),
             ),
           ),
       ],
@@ -567,8 +714,12 @@ class _PortalCardState extends State<PortalCard> {
   void initState() {
     super.initState();
     _url.addListener(() => Stores.I.portal.setSettings(baseUrl: _url.text));
-    _username.addListener(() => Stores.I.portal.setSettings(username: _username.text));
-    _password.addListener(() => Stores.I.portal.setSettings(password: _password.text));
+    _username.addListener(
+      () => Stores.I.portal.setSettings(username: _username.text),
+    );
+    _password.addListener(
+      () => Stores.I.portal.setSettings(password: _password.text),
+    );
   }
 
   @override
@@ -587,7 +738,8 @@ class _PortalCardState extends State<PortalCard> {
     return ListenableBuilder(
       listenable: portal,
       builder: (context, _) {
-        final hasSettings = portal.baseUrl.isNotEmpty &&
+        final hasSettings =
+            portal.baseUrl.isNotEmpty &&
             portal.username.isNotEmpty &&
             portal.password.isNotEmpty;
         final open = _open || portal.data == null || portal.error != null;
@@ -597,9 +749,14 @@ class _PortalCardState extends State<PortalCard> {
             children: [
               InkWell(
                 onTap: () => setState(() => _open = !open),
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(16),
+                ),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 14,
+                  ),
                   child: Row(
                     children: [
                       Expanded(
@@ -608,11 +765,11 @@ class _PortalCardState extends State<PortalCard> {
                           children: [
                             Text(
                               'Substitute plan (Vertretungsplan)',
-                              style: Theme.of(context).textTheme.titleMedium!.copyWith(
-                                    fontWeight: FontWeight.w600,
-                                  ),
+                              style: Theme.of(context).textTheme.titleMedium!
+                                  .copyWith(fontWeight: FontWeight.w600),
                             ),
-                            if (portal.lastFetched != null && portal.error == null)
+                            if (portal.lastFetched != null &&
+                                portal.error == null)
                               Text(
                                 'fetched ${formatClock(portal.lastFetched!)}${widget.relevantCount > 0 ? ' · ${widget.relevantCount} for your courses' : ''}',
                                 style: Theme.of(context).textTheme.labelSmall,
@@ -638,7 +795,9 @@ class _PortalCardState extends State<PortalCard> {
                       const SemLabel('Portal URL'),
                       TextField(
                         controller: _url,
-                        decoration: const InputDecoration(hintText: 'https://evbg.eltern-portal.org'),
+                        decoration: const InputDecoration(
+                          hintText: 'https://evbg.eltern-portal.org',
+                        ),
                       ),
                       const SizedBox(height: 12),
                       const SemLabel('Portal email'),
@@ -662,7 +821,8 @@ class _PortalCardState extends State<PortalCard> {
                             width: 24,
                             child: Checkbox(
                               value: portal.autoFetch,
-                              onChanged: (v) => portal.setSettings(autoFetch: v ?? true),
+                              onChanged: (v) =>
+                                  portal.setSettings(autoFetch: v ?? true),
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -682,14 +842,18 @@ class _PortalCardState extends State<PortalCard> {
                               ? () async {
                                   setState(() => _fetching = true);
                                   await doPortalFetch(context);
-                                  if (mounted) setState(() => _fetching = false);
+                                  if (mounted)
+                                    setState(() => _fetching = false);
                                 }
                               : null,
                           child: _fetching
                               ? const SizedBox(
                                   width: 14,
                                   height: 14,
-                                  child: CircularProgressIndicator(strokeWidth: 2))
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
                               : const Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
@@ -702,12 +866,17 @@ class _PortalCardState extends State<PortalCard> {
                       ),
                       if (portal.error != null) ...[
                         const SizedBox(height: 10),
-                        Text(portal.error!, style: TextStyle(color: sem.marker, fontSize: 13)),
+                        Text(
+                          portal.error!,
+                          style: TextStyle(color: sem.marker, fontSize: 13),
+                        ),
                       ],
                       const SizedBox(height: 10),
                       Text(
                         'credentials are stored only on this device and sent only to your own server when fetching.',
-                        style: Theme.of(context).textTheme.labelSmall!.copyWith(height: 1.6),
+                        style: Theme.of(
+                          context,
+                        ).textTheme.labelSmall!.copyWith(height: 1.6),
                       ),
                     ],
                   ),
@@ -743,7 +912,8 @@ class _JsonImportBodyState extends State<_JsonImportBody> {
         _warnings = result.warnings;
         _error = '';
       });
-      if (result.warnings.isEmpty && context.mounted) Navigator.of(context).pop();
+      if (result.warnings.isEmpty && context.mounted)
+        Navigator.of(context).pop();
     } on FormatException catch (e) {
       setState(() {
         _error = e.message;
@@ -761,8 +931,10 @@ class _JsonImportBodyState extends State<_JsonImportBody> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text('each entry: day · period · subject — optional: time · teacher · room.',
-                style: Theme.of(context).textTheme.labelSmall),
+            Text(
+              'each entry: day · period · subject — optional: time · teacher · room.',
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
             SemGhostButton(
               onPressed: () {
                 widget.controller.text = EXAMPLE_TIMETABLE;
@@ -777,17 +949,19 @@ class _JsonImportBodyState extends State<_JsonImportBody> {
           controller: widget.controller,
           maxLines: 10,
           style: Theme.of(context).textTheme.labelMedium!.copyWith(
-                fontSize: 11,
-                color: sem.ink,
-                height: 1.5,
-              ),
+            fontSize: 11,
+            color: sem.ink,
+            height: 1.5,
+          ),
           autocorrect: false,
           decoration: const InputDecoration(
-            hintText: '[{ "day": "mon", "period": 1, "subject": "Mathematics", "room": "B102" }, …]',
+            hintText:
+                '[{ "day": "mon", "period": 1, "subject": "Mathematics", "room": "B102" }, …]',
           ),
         ),
         const SizedBox(height: 10),
-        if (_error.isNotEmpty) Text(_error, style: TextStyle(color: sem.marker, fontSize: 13)),
+        if (_error.isNotEmpty)
+          Text(_error, style: TextStyle(color: sem.marker, fontSize: 13)),
         for (final w in _warnings)
           Text('• $w', style: TextStyle(color: sem.amber, fontSize: 11)),
         const SizedBox(height: 14),
@@ -797,7 +971,11 @@ class _JsonImportBodyState extends State<_JsonImportBody> {
             onPressed: () => _load(widget.controller.text),
             child: const Row(
               mainAxisSize: MainAxisSize.min,
-              children: [Icon(Icons.upload_outlined, size: 16), SizedBox(width: 6), Text('Format timetable')],
+              children: [
+                Icon(Icons.upload_outlined, size: 16),
+                SizedBox(width: 6),
+                Text('Format timetable'),
+              ],
             ),
           ),
         ),

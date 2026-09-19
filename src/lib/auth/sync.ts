@@ -235,7 +235,7 @@ async function rowDigest(entity: { id: string }, def: RowStoreDef) {
 /* ---------------- row REST calls (JWT) ---------------- */
 
 const rowsUri = (table: string, rowId?: string) =>
-  `${REST_BASE}/databases/${DATABASE_ID}/tables/${table}/rows${rowId ? `/${rowId}` : ""}`;
+  `${REST_BASE}/tablesdb/${DATABASE_ID}/tables/${table}/rows${rowId ? `/${rowId}` : ""}`;
 
 async function restListRows(table: string, userId: string): Promise<Array<RowData & { $id: string }>> {
   const headers = await getAuthHeaders();
@@ -308,6 +308,9 @@ async function syncRows(storeKey: string, user: AuthUser) {
     currentDigests[entity.id] = digest;
     if (digests[entity.id] !== digest) {
       await restUpsertRow(def.table, entity.id, def.toRow(entity), user.id);
+      // record the pushed digest — otherwise the entity re-pushes on every
+      // sync, each push echoing a realtime event → endless churn
+      digests[entity.id] = digest;
     }
   }
 

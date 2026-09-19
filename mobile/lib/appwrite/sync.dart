@@ -33,7 +33,11 @@ import 'client.dart';
 const PUSH_DEBOUNCE_MS = 1200;
 const MAX_CHAT_MESSAGES = 120;
 
-Future<String> snapshotDocId(String userId, String collection, String key) async {
+Future<String> snapshotDocId(
+  String userId,
+  String collection,
+  String key,
+) async {
   final digest = sha256.convert(utf8.encode('$userId:$collection:$key'));
   return digest.toString().substring(0, 32);
 }
@@ -58,10 +62,17 @@ class _KeyOps {
 
 StudyroomStore get _room => Stores.I.studyroom;
 
-Map<String, dynamic> _listPayload(String field, List<Map<String, dynamic>> items) =>
-    {'data': jsonEncode({field: items})};
+Map<String, dynamic> _listPayload(
+  String field,
+  List<Map<String, dynamic>> items,
+) => {
+  'data': jsonEncode({field: items}),
+};
 
-List<Map<String, dynamic>> _listFromDoc(Map<String, dynamic> doc, String field) {
+List<Map<String, dynamic>> _listFromDoc(
+  Map<String, dynamic> doc,
+  String field,
+) {
   try {
     final data = jsonDecode((doc['data'] as String?) ?? '{}');
     if (data is Map && data[field] is List) {
@@ -78,19 +89,22 @@ final _keys = <String, _KeyOps>{
   'timetable': _KeyOps(
     key: 'timetable',
     read: () => _listPayload(
-        'entries', Stores.I.timetable.entries.map((e) => e.toJson()).toList()),
-    apply: (doc) => Stores.I.timetable
-        .replaceEntries(_listFromDoc(doc, 'entries').map(TimetableEntry.fromJson).toList()),
+      'entries',
+      Stores.I.timetable.entries.map((e) => e.toJson()).toList(),
+    ),
+    apply: (doc) => Stores.I.timetable.replaceEntries(
+      _listFromDoc(doc, 'entries').map(TimetableEntry.fromJson).toList(),
+    ),
     isEmpty: () => Stores.I.timetable.entries.isEmpty,
   ),
   'studyroom': _KeyOps(
     key: 'studyroom',
     read: () => {
-          'data': jsonEncode({
-            'selectedDocIds': _room.selectedDocIds,
-            'deckIds': _room.decks.map((d) => d.id).toList(),
-          }),
-        },
+      'data': jsonEncode({
+        'selectedDocIds': _room.selectedDocIds,
+        'deckIds': _room.decks.map((d) => d.id).toList(),
+      }),
+    },
     apply: (doc) {
       Object? parsed;
       try {
@@ -100,9 +114,11 @@ final _keys = <String, _KeyOps>{
       appliedDeckIds = ((map['deckIds'] as List?) ?? [])
           .map((e) => e as String)
           .toList();
-      _room.replaceSelectedDocIds(((map['selectedDocIds'] as List?) ?? [])
-          .map((e) => e as String)
-          .toList());
+      _room.replaceSelectedDocIds(
+        ((map['selectedDocIds'] as List?) ?? [])
+            .map((e) => e as String)
+            .toList(),
+      );
     },
     isEmpty: () => false,
   ),
@@ -111,22 +127,29 @@ final _keys = <String, _KeyOps>{
     collection: kChatsCollectionId,
     omitKey: true,
     read: () => {
-          'messages': jsonEncode(
-              _room.chat.take(MAX_CHAT_MESSAGES).map((m) => m.toJson()).toList()),
-        },
+      'messages': jsonEncode(
+        _room.chat.take(MAX_CHAT_MESSAGES).map((m) => m.toJson()).toList(),
+      ),
+    },
     apply: (doc) {
       List<dynamic> list = const [];
       try {
-        list = (jsonDecode((doc['messages'] as String?) ?? '[]') as List? ?? []);
+        list =
+            (jsonDecode((doc['messages'] as String?) ?? '[]') as List? ?? []);
       } catch (_) {}
       _room.replaceChat(
-          list.whereType<Map>().map((e) => ChatMessage.fromJson(Map<String, dynamic>.from(e))).toList());
+        list
+            .whereType<Map>()
+            .map((e) => ChatMessage.fromJson(Map<String, dynamic>.from(e)))
+            .toList(),
+      );
     },
     isEmpty: () => _room.chat.isEmpty,
   ),
 };
 
-String _collectionFor(String key) => _keys[key]!.collection ?? kSnapshotsCollectionId;
+String _collectionFor(String key) =>
+    _keys[key]!.collection ?? kSnapshotsCollectionId;
 
 /* ---------------- structured row collections ----------------
  * subjects/todos/homeworks/grades/events live as one row per entity in
@@ -209,10 +232,16 @@ final _rowAdapters = <_RowAdapter>[
     fromRow: (id, row) => Todo(
       id: id,
       title: (row['title'] as String?) ?? '',
-      notes: (row['notes'] as String?)?.isEmpty == false ? row['notes'] as String : null,
-      due: (row['due'] as String?)?.isEmpty == false ? row['due'] as String : null,
+      notes: (row['notes'] as String?)?.isEmpty == false
+          ? row['notes'] as String
+          : null,
+      due: (row['due'] as String?)?.isEmpty == false
+          ? row['due'] as String
+          : null,
       priority: priorityFromJson(row['priority'] as String?),
-      subjectId: (row['subjectId'] as String?)?.isEmpty == false ? row['subjectId'] as String : null,
+      subjectId: (row['subjectId'] as String?)?.isEmpty == false
+          ? row['subjectId'] as String
+          : null,
       done: row['done'] == true,
       createdAt: (row['createdAt'] as num?)?.toInt() ?? 0,
     ),
@@ -236,10 +265,16 @@ final _rowAdapters = <_RowAdapter>[
     fromRow: (id, row) => Homework(
       id: id,
       title: (row['title'] as String?) ?? '',
-      notes: (row['notes'] as String?)?.isEmpty == false ? row['notes'] as String : null,
-      due: (row['due'] as String?)?.isEmpty == false ? row['due'] as String : null,
+      notes: (row['notes'] as String?)?.isEmpty == false
+          ? row['notes'] as String
+          : null,
+      due: (row['due'] as String?)?.isEmpty == false
+          ? row['due'] as String
+          : null,
       priority: priorityFromJson(row['priority'] as String?),
-      subjectId: (row['subjectId'] as String?)?.isEmpty == false ? row['subjectId'] as String : null,
+      subjectId: (row['subjectId'] as String?)?.isEmpty == false
+          ? row['subjectId'] as String
+          : null,
       done: row['done'] == true,
       createdAt: (row['createdAt'] as num?)?.toInt() ?? 0,
     ),
@@ -260,11 +295,15 @@ final _rowAdapters = <_RowAdapter>[
     },
     fromRow: (id, row) => GradeEntry(
       id: id,
-      subjectId: (row['subjectId'] as String?)?.isEmpty == false ? row['subjectId'] as String : null,
+      subjectId: (row['subjectId'] as String?)?.isEmpty == false
+          ? row['subjectId'] as String
+          : null,
       title: (row['title'] as String?) ?? '',
       points: (row['points'] as num?)?.toInt() ?? 0,
       weight: (row['weight'] as num?) ?? 1,
-      date: (row['date'] as String?)?.isEmpty == false ? row['date'] as String : null,
+      date: (row['date'] as String?)?.isEmpty == false
+          ? row['date'] as String
+          : null,
     ),
     upsert: (g) => Stores.I.grades.upsertOne(g),
     remove: (id) => Stores.I.grades.removeOne(id),
@@ -286,10 +325,16 @@ final _rowAdapters = <_RowAdapter>[
       id: id,
       title: (row['title'] as String?) ?? '',
       date: (row['date'] as String?) ?? '',
-      time: (row['time'] as String?)?.isEmpty == false ? row['time'] as String : null,
+      time: (row['time'] as String?)?.isEmpty == false
+          ? row['time'] as String
+          : null,
       type: eventTypeFromJson(row['type'] as String?),
-      subjectId: (row['subjectId'] as String?)?.isEmpty == false ? row['subjectId'] as String : null,
-      notes: (row['notes'] as String?)?.isEmpty == false ? row['notes'] as String : null,
+      subjectId: (row['subjectId'] as String?)?.isEmpty == false
+          ? row['subjectId'] as String
+          : null,
+      notes: (row['notes'] as String?)?.isEmpty == false
+          ? row['notes'] as String
+          : null,
     ),
     upsert: (e) => Stores.I.events.upsertOne(e),
     remove: (id) => Stores.I.events.removeOne(id),
@@ -304,19 +349,23 @@ void scheduleRowSync(String storeKey) {
   final auth = Stores.I.auth;
   if (auth.status != SyncStatus.signedIn || auth.user == null) return;
   rowPushTimers[storeKey]?.cancel();
-  rowPushTimers[storeKey] = Timer(const Duration(milliseconds: PUSH_DEBOUNCE_MS), () {
-    final user = Stores.I.auth.user;
-    if (user != null && Stores.I.auth.status == SyncStatus.signedIn) {
-      syncRowStore(user, storeKey);
-    }
-  });
+  rowPushTimers[storeKey] = Timer(
+    const Duration(milliseconds: PUSH_DEBOUNCE_MS),
+    () {
+      final user = Stores.I.auth.user;
+      if (user != null && Stores.I.auth.status == SyncStatus.signedIn) {
+        syncRowStore(user, storeKey);
+      }
+    },
+  );
 }
 
 /// sync one row store: push local diff, then pull + merge cloud rows
 Future<void> syncRowStore(AuthUser user, String storeKey) async {
   final adapter = _rowAdapters.firstWhere((a) => a.storeKey == storeKey);
   final digests = Map<String, String>.from(
-      Stores.I.syncMeta.rowDigests[adapter.table] ?? const {});
+    Stores.I.syncMeta.rowDigests[adapter.table] ?? const {},
+  );
 
   // ---- push: diff local entities vs last-synced digests ----
   final current = adapter.list();
@@ -337,6 +386,11 @@ Future<void> syncRowStore(AuthUser user, String storeKey) async {
           Permission.write(Role.user(user.id)),
         ],
       );
+      // record the digest we just pushed — otherwise the entity re-pushes on
+      // every sync (each push echoing a realtime event → endless churn that
+      // starves the UI). If the server normalizes a value (int → float), the
+      // local view still wins and stays stable from here on.
+      digests[id] = digest;
     }
   }
 
@@ -362,7 +416,9 @@ Future<void> syncRowStore(AuthUser user, String storeKey) async {
     tableId: adapter.table,
     queries: [Query.equal('userId', user.id), Query.limit(100)],
   );
-  final localById = {for (final entity in current) adapter.idOf(entity): entity};
+  final localById = {
+    for (final entity in current) adapter.idOf(entity): entity,
+  };
   // merging writes into the stores — suppress the echo back into scheduleRowSync
   final wasApplying = applyingRemote;
   applyingRemote = true;
@@ -379,8 +435,12 @@ Future<void> syncRowStore(AuthUser user, String storeKey) async {
 
       final local = localById[id];
       if (local != null) {
-        final localDigest = _rowDigestOf({...adapter.toRow(local), 'userId': user.id});
-        if (localDigest != _rowDigestOf(row)) continue; // pending local edit wins
+        final localDigest = _rowDigestOf({
+          ...adapter.toRow(local),
+          'userId': user.id,
+        });
+        if (localDigest != _rowDigestOf(row))
+          continue; // pending local edit wins
       }
 
       final entity = adapter.fromRow(id, row);
@@ -392,7 +452,8 @@ Future<void> syncRowStore(AuthUser user, String storeKey) async {
   }
 
   debugPrint(
-      '[sync] rows $storeKey: ${current.length} local, ${rows.rows.length} cloud → merged');
+    '[sync] rows $storeKey: ${current.length} local, ${rows.rows.length} cloud → merged',
+  );
   Stores.I.syncMeta.setRowDigests(adapter.table, digests);
 }
 
@@ -406,7 +467,6 @@ List<String>? appliedDeckIds;
 /// realtime events with the same stamp are our own echoes, not remote changes
 final _lastPushedAt = <String, int>{};
 RealtimeSubscription? _realtimeSub;
-
 
 /* ---------------- raw REST document calls ----------------
  * The Dart SDK's typed Document parser crashes on our collections (the new
@@ -425,10 +485,14 @@ Future<Map<String, String>> _restHeaders() async {
 }
 
 Uri _docUri(String collection, String docId) => Uri.parse(
-    '$kAppwriteEndpoint/databases/$kDatabaseId/collections/$collection/documents/$docId');
+  '$kAppwriteEndpoint/databases/$kDatabaseId/collections/$collection/documents/$docId',
+);
 
 /// GET a document → flat attribute map; null when it does not exist
-Future<Map<String, dynamic>?> restGetDocument(String collection, String docId) async {
+Future<Map<String, dynamic>?> restGetDocument(
+  String collection,
+  String docId,
+) async {
   final res = await http
       .get(_docUri(collection, docId), headers: await _restHeaders())
       .timeout(const Duration(seconds: 20));
@@ -440,31 +504,40 @@ Future<Map<String, dynamic>?> restGetDocument(String collection, String docId) a
 }
 
 /// PATCH the document; creates it (owner-only permissions) when missing
-Future<void> restUpsertDocument(String collection, String docId,
-    Map<String, dynamic> attributes, String userId) async {
+Future<void> restUpsertDocument(
+  String collection,
+  String docId,
+  Map<String, dynamic> attributes,
+  String userId,
+) async {
   final headers = await _restHeaders();
   var res = await http
-      .patch(_docUri(collection, docId),
-          headers: headers, body: jsonEncode({'data': attributes}))
+      .patch(
+        _docUri(collection, docId),
+        headers: headers,
+        body: jsonEncode({'data': attributes}),
+      )
       .timeout(const Duration(seconds: 20));
   if (res.statusCode == 404) {
     final createUri = Uri.parse(
-        '$kAppwriteEndpoint/databases/$kDatabaseId/collections/$collection/documents');
+      '$kAppwriteEndpoint/databases/$kDatabaseId/collections/$collection/documents',
+    );
     res = await http
-        .post(createUri,
-            headers: headers,
-            body: jsonEncode({
-              'documentId': docId,
-              'data': attributes,
-              'permissions': [
-                'read("user:$userId")',
-                'write("user:$userId")',
-              ],
-            }))
+        .post(
+          createUri,
+          headers: headers,
+          body: jsonEncode({
+            'documentId': docId,
+            'data': attributes,
+            'permissions': ['read("user:$userId")', 'write("user:$userId")'],
+          }),
+        )
         .timeout(const Duration(seconds: 20));
   }
   if (res.statusCode >= 400) {
-    throw Exception('upsert $collection/$docId → ${res.statusCode}: ${res.body}');
+    throw Exception(
+      'upsert $collection/$docId → ${res.statusCode}: ${res.body}',
+    );
   }
 }
 
@@ -475,8 +548,17 @@ Future<void> restDeleteDocument(String collection, String docId) async {
 }
 
 Future<void> _upsertDocument(
-    String collection, String docId, Map<String, dynamic> payload, String userId) async {
-  await restUpsertDocument(collection, docId, payload['data'] as Map<String, dynamic>, userId);
+  String collection,
+  String docId,
+  Map<String, dynamic> payload,
+  String userId,
+) async {
+  await restUpsertDocument(
+    collection,
+    docId,
+    payload['data'] as Map<String, dynamic>,
+    userId,
+  );
 }
 
 /// best-effort "was this an offline failure?" — the change stays dirty either
@@ -494,11 +576,22 @@ bool _isOfflineError(Object e) {
 /// data — protects against wiping the cloud from a device that never loaded
 /// it (fresh install, offline reconcile, cleared storage). studyroom/chats
 /// are exempt: clearing the chat or the selection is a legitimate empty sync.
-const _guardedKeys = {'subjects', 'todos', 'homework', 'grades', 'events', 'timetable'};
+const _guardedKeys = {
+  'subjects',
+  'todos',
+  'homework',
+  'grades',
+  'events',
+  'timetable',
+};
 
 /// true when [payload] holds an empty list while the cloud document still has
 /// items — pushing it would destroy cloud data
-Future<bool> _wouldWipeRemote(AuthUser user, String key, Map<String, dynamic> attributes) async {
+Future<bool> _wouldWipeRemote(
+  AuthUser user,
+  String key,
+  Map<String, dynamic> attributes,
+) async {
   final localData = attributes['data'];
   if (localData is! String) return false;
   Object? local;
@@ -507,7 +600,8 @@ Future<bool> _wouldWipeRemote(AuthUser user, String key, Map<String, dynamic> at
   } catch (_) {
     return false;
   }
-  if (local is! Map || local.values.any((v) => v is! List || v.isNotEmpty)) return false;
+  if (local is! Map || local.values.any((v) => v is! List || v.isNotEmpty))
+    return false;
 
   try {
     final docId = await snapshotDocId(user.id, _collectionFor(key), key);
@@ -549,7 +643,8 @@ Future<void> _pushSnapshot(AuthUser user, String key) async {
       return;
     }
 
-    if (_guardedKeys.contains(key) && await _wouldWipeRemote(user, key, attributes)) {
+    if (_guardedKeys.contains(key) &&
+        await _wouldWipeRemote(user, key, attributes)) {
       // keep the cloud copy; clear the dirty flag so we don't retry forever —
       // the next reconcile will pull the cloud state back onto this device
       Stores.I.syncMeta.clearDirty(key);
@@ -573,17 +668,19 @@ Future<void> _pushSnapshot(AuthUser user, String key) async {
 /* ---------------- decks (one document per deck, fetched by id) ---------------- */
 
 Deck _docToDeck(Map<String, dynamic> doc) => Deck(
-      id: '${doc['deckId']}',
-      title: (doc['title'] as String?) ?? 'Deck',
-      documentIds: _decodeStringList(doc['documentIds'] as String?),
-      createdAt: (doc['createdAt'] as num?)?.toInt() ?? 0,
-      updatedAt: (doc['updatedAt'] as num?)?.toInt() ?? 0,
-      cards: _decodeCards(doc['cards'] as String?),
-    );
+  id: '${doc['deckId']}',
+  title: (doc['title'] as String?) ?? 'Deck',
+  documentIds: _decodeStringList(doc['documentIds'] as String?),
+  createdAt: (doc['createdAt'] as num?)?.toInt() ?? 0,
+  updatedAt: (doc['updatedAt'] as num?)?.toInt() ?? 0,
+  cards: _decodeCards(doc['cards'] as String?),
+);
 
 List<String> _decodeStringList(String? json) {
   try {
-    return ((jsonDecode(json ?? '[]') as List?) ?? []).map((e) => e as String).toList();
+    return ((jsonDecode(json ?? '[]') as List?) ?? [])
+        .map((e) => e as String)
+        .toList();
   } catch (_) {
     return [];
   }
@@ -613,22 +710,17 @@ Future<Deck?> _getDeckDoc(AuthUser user, String deckId) async {
 Future<void> _pushDeck(AuthUser user, Deck deck) async {
   final docId = await snapshotDocId(user.id, kDecksCollectionId, deck.id);
   final updatedAt = DateTime.now().millisecondsSinceEpoch;
-  await _upsertDocument(
-    kDecksCollectionId,
-    docId,
-    {
-      'data': {
-        'userId': user.id,
-        'deckId': deck.id,
-        'title': deck.title,
-        'documentIds': jsonEncode(deck.documentIds),
-        'cards': jsonEncode(deck.cards.map((c) => c.toJson()).toList()),
-        'createdAt': deck.createdAt,
-        'updatedAt': updatedAt,
-      },
+  await _upsertDocument(kDecksCollectionId, docId, {
+    'data': {
+      'userId': user.id,
+      'deckId': deck.id,
+      'title': deck.title,
+      'documentIds': jsonEncode(deck.documentIds),
+      'cards': jsonEncode(deck.cards.map((c) => c.toJson()).toList()),
+      'createdAt': deck.createdAt,
+      'updatedAt': updatedAt,
     },
-    user.id,
-  );
+  }, user.id);
   _lastPushedAt[docId] = updatedAt; // own echo — ignore in realtime
 }
 
@@ -709,7 +801,9 @@ void _schedule(String key) {
   final auth = Stores.I.auth;
   if (auth.status != SyncStatus.signedIn || auth.user == null) return;
   Stores.I.syncMeta.markDirty(key, DateTime.now().millisecondsSinceEpoch);
-  _scheduledAt[key] = DateTime.now().add(const Duration(milliseconds: PUSH_DEBOUNCE_MS));
+  _scheduledAt[key] = DateTime.now().add(
+    const Duration(milliseconds: PUSH_DEBOUNCE_MS),
+  );
 }
 
 void _scheduleDecks() => _schedule('decks');
@@ -748,14 +842,19 @@ Future<bool> _observeAndReconcileKey(AuthUser user, String key) async {
   } on AppwriteException catch (e) {
     remote = null;
     observedCloud = e.code == 404;
-    if (e.code != 404) debugPrint('[sync] observe $key failed: ${e.type} ${e.code} ${e.message}');
+    if (e.code != 404)
+      debugPrint(
+        '[sync] observe $key failed: ${e.type} ${e.code} ${e.message}',
+      );
   } catch (e) {
     remote = null;
     observedCloud = false; // offline etc. — cloud state unknown
     debugPrint('[sync] observe $key failed: $e');
   }
   if (observedCloud) Stores.I.syncMeta.markLoaded(key);
-  debugPrint('[sync] observe $key → observed:$observedCloud remote:${remote != null}');
+  debugPrint(
+    '[sync] observe $key → observed:$observedCloud remote:${remote != null}',
+  );
 
   // …unless this device holds local edits that never made it up
   final dirtyAt = Stores.I.syncMeta.dirtyAt[key];
@@ -795,6 +894,7 @@ void _scheduleRetryLoop() {
     if (timer.tick > 120) timer.cancel(); // give up after ~1 h of failures
   });
 }
+
 Future<void> reconcile(AuthUser user) {
   return _reconcileInFlight = _reconcileInFlight
       .then((_) => _runReconcile(user))
@@ -819,7 +919,8 @@ Future<void> _runReconcile(AuthUser user) async {
 
     if (remaining.isNotEmpty) {
       auth.setSyncError(
-          'sync incomplete — ${remaining.join(", ")} could not be loaded; check your connection and tap Sync now');
+        'sync incomplete — ${remaining.join(", ")} could not be loaded; check your connection and tap Sync now',
+      );
       _scheduleRetryLoop();
       return;
     }
@@ -834,7 +935,8 @@ Future<void> _runReconcile(AuthUser user) async {
     } catch (e) {
       debugPrint('[sync] row sync failed: $e');
       auth.setSyncError(
-          'sync incomplete — structured data could not be loaded; check your connection and tap Sync now');
+        'sync incomplete — structured data could not be loaded; check your connection and tap Sync now',
+      );
       _scheduleRetryLoop();
       return;
     }
@@ -896,7 +998,9 @@ Future<void> initSync() async {
   final savedSecret = prefs.getString(_kSessionSecretKey);
   _storedUserId = prefs.getString(_kUserIdKey);
   _storedUserEmail = prefs.getString(_kUserEmailKey);
-  debugPrint('[sync] init: stored session secret present: ${savedSecret != null}');
+  debugPrint(
+    '[sync] init: stored session secret present: ${savedSecret != null}',
+  );
   if (savedSecret != null && savedSecret.isNotEmpty) {
     appwriteClient.setSession(savedSecret);
   }
@@ -928,7 +1032,11 @@ Future<void> initSync() async {
     // network failed with a stored session — stay signed in optimistically
     // using the persisted identity; reconcile retries will surface errors
     debugPrint('[sync] init: network failed, optimistic sign-in');
-    user = AuthUser(_storedUserId ?? '', _storedUserEmail ?? '', _storedUserEmail ?? '');
+    user = AuthUser(
+      _storedUserId ?? '',
+      _storedUserEmail ?? '',
+      _storedUserEmail ?? '',
+    );
   }
 
   if (user == null) {
@@ -945,9 +1053,11 @@ Future<void> initSync() async {
 
   // flaky networks: if the first reconcile failed (DNS, WiFi handoff…), keep
   // retrying — an empty-looking app that never pulls is worse than a delay
-  for (var attempt = 0;
-      attempt < 4 && auth.status == SyncStatus.signedIn && auth.syncError != null;
-      attempt++) {
+  for (
+    var attempt = 0;
+    attempt < 4 && auth.status == SyncStatus.signedIn && auth.syncError != null;
+    attempt++
+  ) {
     await Future.delayed(const Duration(seconds: 10));
     if (auth.status != SyncStatus.signedIn) return;
     await reconcile(user);
@@ -955,7 +1065,10 @@ Future<void> initSync() async {
 }
 
 Future<void> signIn(String email, String password) async {
-  final session = await account.createEmailPasswordSession(email: email, password: password);
+  final session = await account.createEmailPasswordSession(
+    email: email,
+    password: password,
+  );
   if (session.secret.isNotEmpty) {
     await _persistSessionSecret(session.secret);
     appwriteClient.setSession(session.secret);
@@ -975,7 +1088,12 @@ Future<void> signIn(String email, String password) async {
 }
 
 Future<void> signUp(String name, String email, String password) async {
-  await account.create(userId: ID.unique(), email: email, password: password, name: name);
+  await account.create(
+    userId: ID.unique(),
+    email: email,
+    password: password,
+    name: name,
+  );
   await signIn(email, password);
 }
 
@@ -1007,16 +1125,13 @@ void _startRealtime(AuthUser user) {
     for (final table in _rowTables.values)
       'databases.$kDatabaseId.tables.$table.rows',
   ]);
-  _realtimeSub!.stream.listen(
-    (msg) {
-      try {
-        _onRealtimeEvent(msg);
-      } catch (_) {
-        // a malformed event must never crash the app
-      }
-    },
-    onError: (_) {},
-  );
+  _realtimeSub!.stream.listen((msg) {
+    try {
+      _onRealtimeEvent(msg);
+    } catch (_) {
+      // a malformed event must never crash the app
+    }
+  }, onError: (_) {});
 }
 
 void _stopRealtime() {
@@ -1029,13 +1144,20 @@ void _onRealtimeEvent(RealtimeMessage msg) {
   final user = auth.user;
   if (auth.status != SyncStatus.signedIn || user == null) return;
   final doc = msg.payload;
-  if (doc['userId'] is String && doc['userId'] != user.id) return; // another user's doc
+  if (doc['userId'] is String && doc['userId'] != user.id)
+    return; // another user's doc
 
-  // structured row events → debounced store sync (pull merges the change)
+  // structured row events → debounced store sync (pull merges the change).
+  // Events whose row already matches our last-synced digest are our own echoes
+  // or already-merged state — skipping them keeps push storms from looping.
   final event = msg.events.firstOrNull ?? '';
   if (event.contains('/tables/')) {
     for (final entry in _rowTables.entries) {
       if (event.contains('/tables/${entry.value}/rows')) {
+        final rowId = (doc[r'$id'] ?? doc['id']) as String?;
+        final stored = Stores.I.syncMeta.rowDigests[entry.value]?[rowId];
+        if (rowId != null && stored != null && _rowDigestOf(doc) == stored)
+          return;
         scheduleRowSync(entry.key);
         return;
       }
@@ -1105,21 +1227,20 @@ Future<void> mirrorPortal(PortalPlan plan) async {
   final user = auth.user;
   if (auth.status != SyncStatus.signedIn || user == null) return;
   try {
-    final docId = await snapshotDocId(user.id, kSnapshotsCollectionId, 'portal');
-    await _upsertDocument(
-      kSnapshotsCollectionId,
-      docId,
-      {
-        'userId': user.id,
-        'key': 'portal',
-        'data': jsonEncode({
-          'days': plan.days.map((d) => d.toJson()).toList(),
-          'courses': plan.courses,
-        }),
-        'updatedAt': DateTime.now().millisecondsSinceEpoch,
-      },
+    final docId = await snapshotDocId(
       user.id,
+      kSnapshotsCollectionId,
+      'portal',
     );
+    await _upsertDocument(kSnapshotsCollectionId, docId, {
+      'userId': user.id,
+      'key': 'portal',
+      'data': jsonEncode({
+        'days': plan.days.map((d) => d.toJson()).toList(),
+        'courses': plan.courses,
+      }),
+      'updatedAt': DateTime.now().millisecondsSinceEpoch,
+    }, user.id);
   } catch (_) {
     // mirroring is best-effort — the digest just falls back to plain classes
   }
