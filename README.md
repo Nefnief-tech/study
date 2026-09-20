@@ -42,26 +42,9 @@ edits live locally first and win over the cloud until their push lands.
 
 Both clients speak the same protocol against Appwrite **TablesDB** (database `semester`):
 
-```
-        ┌──────────────┐        structured rows        ┌──────────────┐
-        │   Web app    │◀──── one row per entity ─────▶│  Android app │
-        └──────┬───────│   (12 tables, tombstones,     └──────┬───────┘
-               │        sha256 content digests,             │
-               │        pending-local-wins)                 │
-               ▼                                            ▼
-        ┌──────────────────────────────────────────────────────────┐
-        │            Appwrite Cloud · TablesDB · realtime          │
-        │   subjects · todos · homeworks · grades · events ·       │
-        │   timetable_entries · chat_messages · decks ·            │
-        │   flashcards · study_selection · portal_entries ·        │
-        │   portal_courses                                         │
-        └──────────────────────────┬───────────────────────────────┘
-                                   ▼
-                    ┌──────────────────────────────┐
-                    │  daily-digest function (cron) │
-                    │  → push notifications         │
-                    └──────────────────────────────┘
-```
+<div align="center">
+  <img src="docs/architecture.png" alt="Semester sync architecture — web app and Android app exchange structured rows with Appwrite Cloud (TablesDB, Storage, push messages); the daily-digest Appwrite function reads the same data" width="520" />
+</div>
 
 - **Push** — local changes are diffed against last-synced content digests and upserted
   (debounced ~1.2 s); removed entities get a `deleted` tombstone row.

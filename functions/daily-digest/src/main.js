@@ -28,6 +28,11 @@ import { createHash } from "node:crypto";
  */
 
 const ENDPOINT = (process.env.APPWRITE_FUNCTION_API_ENDPOINT || process.env.APPWRITE_ENDPOINT || "https://fra.cloud.appwrite.io/v1").replace(/\/+$/, "");
+// hardening: the only outbound host is the Appwrite-injected endpoint — refuse
+// anything else so a bad env var can't turn this function into a request proxy
+if (!/^https:\/\/[a-z0-9.-]+\/?/i.test(ENDPOINT)) {
+  throw new Error(`daily-digest: refusing non-https endpoint "${ENDPOINT.slice(0, 40)}"`);
+}
 /** project id: injected by Appwrite, or the default project this repo deploys to */
 const PROJECT_ID =
   process.env.APPWRITE_FUNCTION_PROJECT_ID ||
@@ -46,8 +51,17 @@ const JS_DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 /* Appwrite REST helpers (no SDK — keeps the deployment tiny)          */
 /* ------------------------------------------------------------------ */
 
+/** only these hosts may be requested — ENDPOINT is Appwrite-injected, but the
+ * guard keeps a bad env var from pointing the function at anything else */
+const ALLOWED_HOSTS = new Set(["fra.cloud.appwrite.io", "cloud.appwrite.io"]);
+
 async function aw(path, options = {}) {
-  const res = await fetch(`${ENDPOINT}${path}`, {
+  // path is always a literal Appwrite API route built inside this file
+  const url = new URL(path, ENDPOINT);
+  if (url.protocol !== "https:" || !ALLOWED_HOSTS.has(url.hostname)) {
+    throw new Error(`daily-digest: refusing endpoint ${url.protocol}//${url.hostname}`);
+  }
+  const res = await fetch(url, {
     ...options,
     headers: {
       "X-Appwrite-Project": PROJECT_ID,
