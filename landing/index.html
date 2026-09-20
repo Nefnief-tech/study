@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Semester. The study desk, on the web and in your pocket.</title>
+<meta name="description" content="Grades, tasks, homework, timetable with live substitutions, and an AI study room. One design, one database, every device. Open source." />
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="96" fill="%2331633f"/><g stroke="%23f5f2ea" stroke-width="34" stroke-linecap="round"><line x1="256" y1="128" x2="256" y2="384"/><line x1="143.6" y1="192" x2="368.4" y2="320"/><line x1="143.6" y1="320" x2="368.4" y2="192"/></g><circle cx="256" cy="256" r="40" fill="%23f5f2ea"/></svg>' />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  /* Semester's own stationery palette, light + dark, auto */
+  :root {
+    --paper: #f5f2ea; --paper-deep: #edeade; --card: #fdfcf8;
+    --ink: #26221b; --ink-soft: #756e60; --line: #e0dacb; --grid: #e8e3d5;
+    --accent: #31633f; --accent-soft: #e2eadd;
+    --marker: #c14b26; --info: #38618c; --amber: #8a6a10;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #17150f; --paper-deep: #1e1b14; --card: #211e17;
+      --ink: #ece6d6; --ink-soft: #a29a88; --line: #353025; --grid: #251f15;
+      --accent: #8fb99a; --accent-soft: #253528;
+      --marker: #e08a63; --info: #8fb4dd; --amber: #d9b95c;
+    }
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--paper); color: var(--ink);
+    font-family: "Instrument Sans", system-ui, sans-serif;
+    font-size: 16px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--accent); color: var(--paper); }
+
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+  .display { font-family: "Fraunces", serif; font-weight: 550; letter-spacing: -0.02em; line-height: 1.05; }
+  .mono { font-family: "IBM Plex Mono", monospace; }
+
+  a { color: inherit; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    border-radius: 10px; padding: 11px 20px;
+    font-size: 15px; font-weight: 500; text-decoration: none;
+    transition: background .18s ease, border-color .18s ease, transform .1s ease;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--ink); color: var(--paper); }
+  .btn-primary:hover { background: var(--accent); }
+  .btn-ghost { border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  .btn-ghost:hover { border-color: color-mix(in srgb, var(--ink) 30%, transparent); }
+
+  /* ---------- nav ---------- */
+  nav { border-bottom: 1px solid var(--line); background: var(--paper); }
+  .nav-inner { display: flex; align-items: center; gap: 28px; height: 64px; }
+  .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font-family: "Fraunces", serif; font-weight: 600; font-size: 20px; letter-spacing: -0.02em; }
+  .brand img { width: 26px; height: 26px; border-radius: 6px; }
+  .nav-links { display: flex; gap: 22px; margin-left: auto; }
+  .nav-links a { text-decoration: none; font-size: 14px; color: var(--ink-soft); transition: color .15s ease; }
+  .nav-links a:hover { color: var(--ink); }
+  .nav-cta { margin-left: 8px; padding: 8px 16px; font-size: 14px; }
+  @media (max-width: 720px) { .nav-links a:not(.nav-cta) { display: none; } }
+
+  /* ---------- hero ---------- */
+  .hero { padding: 72px 0 64px; }
+  .hero-grid { display: grid; grid-template-columns: 11fr 9fr; gap: 56px; align-items: center; }
+  @media (max-width: 880px) { .hero-grid { grid-template-columns: 1fr; gap: 40px; } .hero { padding: 48px 0 40px; } }
+  .hero h1 { font-size: clamp(38px, 5vw, 58px); }
+  .hero h1 em { font-style: italic; font-weight: 500; }
+  .hero p.lede { margin: 20px 0 28px; max-width: 46ch; font-size: 17px; color: var(--ink-soft); }
+  .hero-ctas { display: flex; gap: 12px; flex-wrap: wrap; }
+
+  /* ---------- product preview (built in the app's real design language) ---------- */
+  .preview {
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 20px; box-shadow: 0 24px 48px -32px color-mix(in srgb, var(--ink) 35%, transparent);
+  }
+  .preview .hello { font-family: "Fraunces", serif; font-size: 18px; font-weight: 550; }
+  .preview .date { font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--ink-soft); letter-spacing: .12em; text-transform: uppercase; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin: 14px 0; }
+  .stat { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+  .stat b { display: block; font-family: "Fraunces", serif; font-size: 22px; font-weight: 550; line-height: 1.15; }
+  .stat span { font-family: "IBM Plex Mono", monospace; font-size: 9.5px; color: var(--ink-soft); letter-spacing: .08em; text-transform: uppercase; }
+  .task { display: flex; align-items: center; gap: 10px; padding: 9px 2px; border-top: 1px solid var(--line); font-size: 13.5px; }
+  .task .box { width: 15px; height: 15px; border: 1.5px solid var(--ink-soft); border-radius: 4px; flex: none; }
+  .task.done .box { background: var(--accent); border-color: var(--accent); position: relative; }
+  .task.done span { text-decoration: line-through; color: var(--ink-soft); }
+  .task .when { margin-left: auto; font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--ink-soft); white-space: nowrap; }
+  .task .when.late { color: var(--marker); }
+  .task .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+
+  /* ---------- feature bento ---------- */
+  .features { padding: 56px 0 24px; }
+  .section-head { max-width: 60ch; margin-bottom: 36px; }
+  .section-head h2 { font-size: clamp(28px, 3.4vw, 38px); margin-bottom: 10px; }
+  .section-head p { color: var(--ink-soft); font-size: 16px; }
+  .bento { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
+  .cell {
+    grid-column: span 4; background: var(--card); border: 1px solid var(--line);
+    border-radius: 16px; padding: 22px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .cell.span6 { grid-column: span 6; }
+  .cell.span3 { grid-column: span 3; }
+  .cell.span12 { grid-column: span 12; flex-direction: row; align-items: center; justify-content: space-between; gap: 32px; }
+  .cell.tint { background: var(--accent-soft); border-color: transparent; }
+  .cell.deep { background: var(--paper-deep); border-color: transparent; }
+  @media (max-width: 880px) {
+    .cell, .cell.span6, .cell.span3, .cell.span12 { grid-column: span 12; }
+    .cell.span12 { flex-direction: column; align-items: stretch; }
+    .cell.span12 .chat-demo { margin: 0; }
+  }
+  .cell .icon { width: 34px; height: 34px; border-radius: 9px; background: var(--paper); border: 1px solid var(--line); display: grid; place-items: center; color: var(--accent); }
+  @media (prefers-color-scheme: dark) { .cell .icon { background: var(--paper-deep); } }
+  .cell h3 { font-family: "Fraunces", serif; font-weight: 550; font-size: 19px; margin-top: 4px; }
+  .cell p { font-size: 14px; color: var(--ink-soft); }
+
+  /* mini timetable inside the bento */
+  .mini-tt { margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--paper); font-size: 10.5px; }
+  .mini-tt .row { display: grid; grid-template-columns: 26px 1fr 1fr 1fr; }
+  .mini-tt .row > div { padding: 7px 8px; border-top: 1px solid var(--line); min-height: 34px; }
+  .mini-tt .row.head > div { border-top: 0; font-family: "IBM Plex Mono", monospace; font-size: 9px; letter-spacing: .08em; color: var(--ink-soft); text-transform: uppercase; background: var(--paper-deep); }
+  .mini-tt .pd { font-family: "IBM Plex Mono", monospace; color: var(--ink-soft); text-align: center; }
+  .mini-tt .less b { display: block; font-size: 11px; }
+  .mini-tt .less span { font-family: "IBM Plex Mono", monospace; font-size: 9px; color: var(--ink-soft); }
+  .mini-tt .cancelled { background: color-mix(in srgb, var(--marker) 8%, transparent); }
+  .mini-tt .cancelled b { text-decoration: line-through; text-decoration-color: var(--marker); }
+  .mini-tt .substituted { background: color-mix(in srgb, var(--amber) 8%, transparent); }
+  .chip { display: inline-block; margin-top: 3px; padding: 1.5px 6px; border-radius: 99px; font-family: "IBM Plex Mono", monospace; font-size: 8.5px; border: 1px solid; }
+  .chip.red { color: var(--marker); border-color: color-mix(in srgb, var(--marker) 40%, transparent); background: color-mix(in srgb, var(--marker) 10%, transparent); }
+  .chip.amb { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); background: color-mix(in srgb, var(--amber) 10%, transparent); }
+
+  /* grade chip demo */
+  .grade-demo { margin-top: 12px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); padding: 12px 14px; }
+  .grade-demo .g { font-family: "IBM Plex Mono", monospace; font-weight: 500; font-size: 15px; color: var(--accent); }
+  .grade-demo .bar { flex: 1; height: 5px; border-radius: 99px; background: linear-gradient(90deg, var(--accent), var(--amber), var(--marker)); position: relative; }
+  .grade-demo .bar i { position: absolute; top: -4px; left: 62%; width: 2.5px; height: 13px; border-radius: 2px; background: var(--ink); }
+  .grade-demo .pts { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; color: var(--ink-soft); }
+
+  /* chat demo */
+  .chat-demo { margin-top: 12px; display: grid; gap: 8px; font-size: 12px; }
+  .chat-demo .q { align-self: end; background: var(--ink); color: var(--paper); padding: 7px 11px; border-radius: 12px 12px 3px 12px; max-width: 85%; }
+  .chat-demo .a { align-self: start; background: var(--paper); border: 1px solid var(--line); padding: 7px 11px; border-radius: 12px 12px 12px 3px; max-width: 92%; color: var(--ink); }
+  .chat-demo .a i { font-family: "IBM Plex Mono", monospace; font-style: normal; font-size: 9.5px; color: var(--accent); }
+
+  /* ---------- system strip ---------- */
+  .system { padding: 72px 0; }
+  .sys-grid { display: grid; grid-template-columns: 5fr 7fr; gap: 48px; align-items: start; }
+  @media (max-width: 880px) { .sys-grid { grid-template-columns: 1fr; gap: 24px; } }
+  .sys-grid h2 { font-size: clamp(26px, 3vw, 34px); margin-bottom: 12px; }
+  .sys-grid .side p { color: var(--ink-soft); font-size: 15.5px; max-width: 40ch; }
+  .sys-items { display: grid; gap: 0; }
+  .sys-item { display: grid; grid-template-columns: 1fr; gap: 4px; padding: 18px 0; border-top: 1px solid var(--line); }
+  .sys-item:last-child { border-bottom: 1px solid var(--line); }
+  .sys-item h4 { font-family: "Fraunces", serif; font-weight: 550; font-size: 16.5px; margin-bottom: 3px; }
+  .sys-item p { font-size: 14px; color: var(--ink-soft); max-width: 52ch; }
+
+  /* ---------- CTA ---------- */
+  .cta { padding: 24px 0 80px; }
+  .cta-box {
+    background: var(--accent); border-radius: 20px; padding: 52px 40px;
+    display: flex; align-items: center; justify-content: space-between; gap: 32px; flex-wrap: wrap;
+  }
+  .cta-box h2 { font-family: "Fraunces", serif; font-weight: 550; font-size: clamp(24px, 3vw, 32px); color: var(--paper); letter-spacing: -0.02em; }
+  .cta-box p { color: color-mix(in srgb, var(--paper) 78%, transparent); font-size: 15px; margin-top: 6px; max-width: 52ch; }
+  .cta-box .btn-primary { background: var(--paper); color: var(--accent); }
+  .cta-box .btn-primary:hover { background: #fff; }
+  .cta-box .btn-ghost { border-color: color-mix(in srgb, var(--paper) 45%, transparent); background: transparent; color: var(--paper); }
+  .cta-box .btn-ghost:hover { border-color: var(--paper); }
+
+  /* ---------- footer ---------- */
+  footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--ink-soft); font-size: 13px; }
+  .foot-inner { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+  .foot-inner .brand { font-size: 16px; }
+  .foot-inner nav2, .foot-right { margin-left: auto; display: flex; gap: 18px; }
+  .foot-inner a { text-decoration: none; }
+  .foot-inner a:hover { color: var(--ink); }
+
+  /* entry motion, gated */
+  @media (prefers-reduced-motion: no-preference) {
+    .hero-copy, .preview { animation: rise .6s cubic-bezier(.16,1,.3,1) both; }
+    .preview { animation-delay: .08s; }
+    @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap nav-inner">
+    <a class="brand" href="#">
+      <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='96' fill='%2331633f'/%3E%3Cg stroke='%23f5f2ea' stroke-width='34' stroke-linecap='round'%3E%3Cline x1='256' y1='128' x2='256' y2='384'/%3E%3Cline x1='143.6' y1='192' x2='368.4' y2='320'/%3E%3Cline x1='143.6' y1='320' x2='368.4' y2='192'/%3E%3C/g%3E%3Ccircle cx='256' cy='256' r='40' fill='%23f5f2ea'/%3E%3C/svg%3E" alt="" />
+      Semester.
+    </a>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#system">How it works</a>
+      <a class="btn btn-primary nav-cta" href="https://github.com/Nefnief-tech/study/releases/tag/v0.1">Download</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <h1 class="display">Your whole school term, <em>on one desk.</em></h1>
+      <p class="lede">Grades, tasks, homework, timetable and study material on one desk. Web and phone, always in sync.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="https://github.com/Nefnief-tech/study/releases/tag/v0.1">Download for Android</a>
+        <a class="btn btn-ghost" href="https://github.com/Nefnief-tech/study">View source</a>
+      </div>
+    </div>
+
+    <div class="preview" role="img" aria-label="Preview of the Semester dashboard">
+      <div class="date">Sunday · 20.09.</div>
+      <div class="hello">Good evening, Fabian.</div>
+      <div class="stats">
+        <div class="stat"><b>7</b><span>open tasks</span></div>
+        <div class="stat"><b>2</b><span>due this week</span></div>
+        <div class="stat"><b>2,3</b><span>avg. grade</span></div>
+      </div>
+      <div class="task"><span class="box"></span><span class="dot" style="background:#c14b26"></span>Mathe, Blatt 5<span class="when late">overdue</span></div>
+      <div class="task"><span class="box"></span><span class="dot" style="background:#38618c"></span>Englisch Vokabeln<span class="when">Tue, 3rd pd.</span></div>
+      <div class="task done"><span class="box"></span><span class="dot" style="background:#31633f"></span><span>Physik Protokoll</span><span class="when">done</span></div>
+    </div>
+  </div>
+</header>
+
+<section class="features" id="features">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="display">Everything a school week throws at you.</h2>
+      <p>Six tools that share one set of subjects, one timetable and one database. No export-import dances between apps.</p>
+    </div>
+
+    <div class="bento">
+      <div class="cell span6">
+        <div class="icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        </div>
+        <h3>Tasks &amp; homework</h3>
+        <p>Due dates with times, priorities, subject tags and notes. Filters, sorting and overdue highlighting keep the pile honest.</p>
+      </div>
+
+      <div class="cell span6">
+        <div class="icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5"/></svg>
+        </div>
+        <h3>Grades</h3>
+        <p>Weighted per-subject averages in the Punkte system, shown as the German Note scale.</p>
+        <div class="grade-demo">
+          <span class="g">2,3</span>
+          <span class="bar"><i></i></span>
+          <span class="pts">12 P</span>
+        </div>
+      </div>
+
+      <div class="cell span6 tint">
+        <div class="icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+        </div>
+        <h3>Timetable with live substitutions</h3>
+        <p>Import your weekly grid once, then see cancellations and substitutes from your school portal directly in the grid. Double periods included.</p>
+        <div class="mini-tt" role="img" aria-label="Timetable cells marked as cancelled and substituted">
+          <div class="row head"><div>Pd</div><div>Mon</div><div>Wed</div><div>Fri</div></div>
+          <div class="row"><div class="pd">1</div><div class="less"><b>Mathe</b><span>B1</span></div><div class="less"><b>Sport</b><span>Gym</span></div><div class="less cancelled"><b>Englisch</b><span class="chip red">cancelled</span></div></div>
+          <div class="row"><div class="pd">3</div><div class="less"><b>Physik</b><span>Lab</span></div><div class="less substituted"><b>Sport</b><span class="chip amb">→ Fr. Lauf</span></div><div class="less"><b>Musik</b><span>112</span></div></div>
+        </div>
+      </div>
+
+      <div class="cell span3">
+        <div class="icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+        </div>
+        <h3>Calendar</h3>
+        <p>Month and week views that combine events, exams, deadlines and task due dates in one place.</p>
+      </div>
+
+      <div class="cell span3 deep">
+        <div class="icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg>
+        </div>
+        <h3>Daily digest</h3>
+        <p>Every afternoon, a push with tomorrow's classes, overdue homework and upcoming exams.</p>
+      </div>
+
+      <div class="cell span12">
+        <div>
+          <div class="icon">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"/><path d="M19 15l.9 2.4L22 18.3l-2.1.9L19 21.6l-.9-2.4-2.1-.9 2.1-.9L19 15z"/></svg>
+          </div>
+          <h3>AI study room</h3>
+          <p>Upload PDFs, slides or notes and chat with grounded answers that cite your documents. Flashcard decks are generated from the same material.</p>
+        </div>
+        <div class="chat-demo" role="img" aria-label="Chat answer with a source citation" style="margin: 12px 0 0 auto; max-width: 46%;">
+          <div class="q">What did the Weimar constitution say about schools?</div>
+          <div class="a">Secondary schools stayed under state supervision; confessional classes stayed optional. <i>history.pdf, p. 12</i></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="system" id="system">
+  <div class="wrap sys-grid">
+    <div class="side">
+      <h2 class="display">Built like a system, not a toy.</h2>
+      <p>Semester was built for real school weeks: flaky WLAN, double lessons, plans that change at 7:45. The boring parts are the feature.</p>
+    </div>
+    <div class="sys-items">
+      <div class="sys-item">
+        <div>
+          <h4>Auto-save on every interaction</h4>
+          <p>Forms have no save button. Every edit commits as you type and closing a form can never lose input, on web and Android alike.</p>
+        </div>
+      </div>
+      <div class="sys-item">
+        <div>
+          <h4>Offline-first sync</h4>
+          <p>Edits live locally first and win over the cloud until their push lands. Structured rows with deterministic ids mean web and phone agree without coordination.</p>
+        </div>
+      </div>
+      <div class="sys-item">
+        <div>
+          <h4>Credentials stay put</h4>
+          <p>Portal logins never leave your device except to your own server for the fetch. Sign out and your data stays with you.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="cta">
+  <div class="wrap">
+    <div class="cta-box">
+      <div>
+        <h2>Set up your desk in one afternoon.</h2>
+        <p>Paste your timetable as JSON, connect your school portal, install the app. Everything else follows.</p>
+      </div>
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <a class="btn btn-primary" href="https://github.com/Nefnief-tech/study/releases/tag/v0.1">Download for Android</a>
+        <a class="btn btn-ghost" href="https://github.com/Nefnief-tech/study#readme">Read the docs</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-inner">
+    <a class="brand" href="#">
+      <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='96' fill='%2331633f'/%3E%3Cg stroke='%23f5f2ea' stroke-width='34' stroke-linecap='round'%3E%3Cline x1='256' y1='128' x2='256' y2='384'/%3E%3Cline x1='143.6' y1='192' x2='368.4' y2='320'/%3E%3Cline x1='143.6' y1='320' x2='368.4' y2='192'/%3E%3C/g%3E%3Ccircle cx='256' cy='256' r='40' fill='%23f5f2ea'/%3E%3C/svg%3E" alt="" />
+      Semester.
+    </a>
+    <span>Open source and self-hostable.</span>
+    <div class="foot-right">
+      <a href="https://github.com/Nefnief-tech/study">GitHub</a>
+      <a href="https://github.com/Nefnief-tech/study/releases">Releases</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
