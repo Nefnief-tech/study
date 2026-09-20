@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import 'package:appwrite/appwrite.dart';
+import 'package:appwrite/enums.dart' as enums;
+import 'package:appwrite/models.dart' as models;
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -812,15 +814,32 @@ Future<void> initSync() async {
 }
 
 Future<void> signIn(String email, String password) async {
-  final session = await account.createEmailPasswordSession(
-    email: email,
-    password: password,
-  );
+  models.Session session;
+  try {
+    session = await account.createEmailPasswordSession(
+      email: email,
+      password: password,
+    );
+  } on AppwriteException catch (e) {
+    if (_isMfaFactorsError(e)) throw await _mfaRequiredException();
+    rethrow;
+  }
+  // the secret of a pending-MFA session stays valid after the challenge
+  // completes — persist it so the session survives app restarts
   if (session.secret.isNotEmpty) {
     await _persistSessionSecret(session.secret);
     appwriteClient.setSession(session.secret);
   }
-  final user = await getCurrentUser();
+
+  // a pending-MFA session authenticates only MFA calls — the profile read
+  // is what tells us the difference
+  AuthUser? user;
+  try {
+    user = await getCurrentUserStrict();
+  } on AppwriteException catch (e) {
+    if (_isMfaFactorsError(e)) throw await _mfaRequiredException();
+    user = null;
+  }
   if (user == null) {
     // belt & suspenders failed — the session exists but the profile doesn't load
     Stores.I.auth.setAuth(AuthUser('', email, email), SyncStatus.signedIn);
@@ -832,6 +851,75 @@ Future<void> signIn(String email, String password) async {
   _subscribeStores();
   _startRealtime(user);
   await reconcile(user);
+}
+
+bool _isMfaFactorsError(AppwriteException e) =>
+    e.type == 'user_more_factors_required' ||
+    (e.code == 401 && (e.message ?? '').contains('more factors'));
+
+Future<MfaRequiredException> _mfaRequiredException() async {
+  var emailFactor = true;
+  var totpFactor = false;
+  try {
+    final f = await account.listMFAFactors();
+    emailFactor = f.email == true;
+    totpFactor = f.totp == true;
+  } catch (_) {}
+  return MfaRequiredException(emailFactor: emailFactor, totpFactor: totpFactor);
+}
+
+/* ---------------- email 2FA (MFA) ----------------
+ * The email factor needs no enrollment — a verified email is automatically a
+ * factor once MFA is switched on (updateMFA). At sign-in the password creates
+ * a pending session that may only answer MFA challenges; createMFAChallenge
+ * (which sends the code via the "MFA Code" email template) +
+ * updateMFAChallenge complete it. Recovery codes work as a challenge factor. */
+
+/// starts a challenge — for the email factor this sends the code;
+/// returns the challenge id for [confirmMfaSignIn]
+Future<String> startMfaChallenge(String factor) async {
+  final challenge = await account.createMFAChallenge(
+    factor: enums.AuthenticationFactor.values.firstWhere((f) => f.value == factor),
+  );
+  return challenge.$id;
+}
+
+/// completes the pending sign-in with the emailed (or TOTP / recovery) code
+Future<void> confirmMfaSignIn(String challengeId, String otp) async {
+  await account.updateMFAChallenge(challengeId: challengeId, otp: otp);
+  // session persistence rides on the SDK's file-backed cookie jar, exactly
+  // like a plain sign-in — nothing extra to persist here
+  final user = await getCurrentUserStrict();
+  await _persistUserId(user);
+  Stores.I.auth.setAuth(user, SyncStatus.signedIn);
+  _subscribeStores();
+  _startRealtime(user);
+  await reconcile(user);
+}
+
+/// drops the pending session when the user abandons the 2FA step
+Future<void> cancelMfaSignIn() async {
+  try {
+    await account.deleteSession(sessionId: 'current');
+  } catch (_) {}
+}
+
+/// toggles two-factor for the signed-in account
+Future<void> setMfaEnabled(bool enabled) async {
+  await account.updateMFA(mfa: enabled);
+  await refreshUser();
+}
+
+/// recovery codes for the enabled account — generates the first set on demand
+Future<List<String>> getOrCreateRecoveryCodes() async {
+  try {
+    final existing = await account.getMFARecoveryCodes();
+    if (existing.recoveryCodes.isNotEmpty) return existing.recoveryCodes;
+  } catch (_) {
+    // none generated yet
+  }
+  final created = await account.createMFARecoveryCodes();
+  return created.recoveryCodes;
 }
 
 Future<void> signUp(String name, String email, String password) async {

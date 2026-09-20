@@ -1,4 +1,4 @@
-import { ID } from "appwrite";
+import { ID, AuthenticationFactor } from "appwrite";
 import {
   DATABASE_ID,
   account,
@@ -6,6 +6,7 @@ import {
   appwriteConfigured,
   getCurrentUser,
   getAppwriteJwtHeaders,
+  requireCurrentUser,
   type AuthUser,
 } from "./appwrite";
 import { useAuthStore, useSyncMetaStore } from "@/lib/store/auth";
@@ -829,6 +830,22 @@ export function friendlyAuthFlowError(err: unknown): string {
     return "The mail server isn't configured for this project yet.";
   if (/origin|platform|url/i.test(raw))
     return "This address isn't allowed as a mail redirect — is this host registered in the Appwrite project?";
+  if (/not verified|verification|required.*verified|verified.*required/i.test(raw))
+    return "Verify your email address first — two-factor needs a verified email.";
+  return raw.slice(0, 160) || "Something went wrong.";
+}
+
+/** errors from the 2FA sign-in step (challenge create/confirm) */
+export function friendlyMfaError(err: unknown): string {
+  const raw = `${(err as Error)?.message ?? err}`;
+  if (/rate/i.test(raw))
+    return "Too many attempts — wait a minute and try again.";
+  if (/challenge|expired/i.test(raw))
+    return "This code request ran out — send a new one.";
+  if (/invalid|wrong|token|credentials|mismatch/i.test(raw))
+    return "That code isn't right — check the newest email (or recovery code) and try again.";
+  if (/smtp/i.test(raw))
+    return "The mail server isn't configured for this project yet.";
   return raw.slice(0, 160) || "Something went wrong.";
 }
 
@@ -914,20 +931,123 @@ export async function initSync() {
   await reconcile(user);
 }
 
+/** thrown by signIn when the account requires a second factor — the pending
+ * session (secret already persisted) can only answer MFA challenges until
+ * confirmMfaSignIn completes it */
+export class MfaRequiredError extends Error {
+  /** which second factors the account can answer with */
+  factors: { email: boolean; totp: boolean };
+  constructor(factors: { email: boolean; totp: boolean }) {
+    super("Two-factor authentication is required.");
+    this.name = "MfaRequiredError";
+    this.factors = factors;
+  }
+}
+
+async function availableMfaFactors(): Promise<{ email: boolean; totp: boolean }> {
+  if (!account) throw new Error("Auth is not configured");
+  try {
+    const f = await account.listMfaFactors();
+    return { email: f.email === true, totp: f.totp === true };
+  } catch {
+    return { email: true, totp: false }; // email is the app's default factor
+  }
+}
+
 export async function signIn(email: string, password: string) {
   if (!account) throw new Error("Auth is not configured");
-  const session = await account.createEmailPasswordSession(email, password);
-  if (session.secret && appwriteClient) {
-    appwriteClient.setSession(session.secret);
-    await persistSession(session.secret);
+  let mfaPending = false;
+  try {
+    const session = await account.createEmailPasswordSession(email, password);
+    if (session.secret && appwriteClient) {
+      appwriteClient.setSession(session.secret);
+      await persistSession(session.secret);
+    }
+    mfaPending = true; // creation succeeded — a pending-MFA session still fails the profile read
+  } catch (err) {
+    if (isMfaFactorsError(err)) throw new MfaRequiredError(await availableMfaFactors());
+    throw err;
   }
-  const user = await getCurrentUser();
+
+  try {
+    const user = await requireCurrentUser();
+    await finalizeSignIn(user);
+  } catch (err) {
+    if (isMfaFactorsError(err)) throw new MfaRequiredError(await availableMfaFactors());
+    if (mfaPending) {
+      // creation worked but the profile read failed for another reason —
+      // treat like before MFA existed (signed in, profile unknown)
+      useAuthStore.getState().setAuth(null, "signed-in");
+      subscribeStores();
+      return;
+    }
+    throw err;
+  }
+}
+
+/** Appwrite signals a pending MFA session as 401 user_more_factors_required */
+function isMfaFactorsError(err: unknown): boolean {
+  const e = err as { type?: string; code?: number; message?: string };
+  return e?.type === "user_more_factors_required" || (e?.code === 401 && /more factors/i.test(e?.message ?? ""));
+}
+
+/** shared tail of every sign-in path (plain, MFA-completed) */
+async function finalizeSignIn(user: AuthUser) {
   useAuthStore.getState().setAuth(user, "signed-in");
   subscribeStores();
-  if (user) {
-    startRealtime(user);
-    await reconcile(user);
+  startRealtime(user);
+  await reconcile(user);
+}
+
+/* ---------------- email 2FA (MFA) ----------------
+ * The email factor needs no enrollment — a verified email is automatically a
+ * factor once MFA is switched on (updateMFA). At sign-in the password creates
+ * a pending session that may only answer MFA challenges; createMfaChallenge
+ * (which sends the code via the "MFA Code" email template) + updateMfaChallenge
+ * complete it. Recovery codes work as a challenge factor too. */
+
+export type MfaChallengeFactor = "email" | "totp" | "recoverycode";
+
+/** starts a challenge — for the email factor this sends the code */
+export async function startMfaChallenge(factor: MfaChallengeFactor): Promise<string> {
+  if (!account) throw new Error("Auth is not configured");
+  const challenge = await account.createMfaChallenge(factor as AuthenticationFactor);
+  return challenge.$id;
+}
+
+/** completes the pending sign-in with the emailed (or TOTP / recovery) code */
+export async function confirmMfaSignIn(challengeId: string, otp: string) {
+  if (!account) throw new Error("Auth is not configured");
+  await account.updateMfaChallenge(challengeId, otp);
+  const user = await requireCurrentUser();
+  await finalizeSignIn(user);
+}
+
+/** drops the pending session when the user abandons the 2FA step */
+export async function cancelMfaSignIn() {
+  if (!account) return;
+  await account.deleteSession("current").catch(() => {});
+  try {
+    localStorage.removeItem("cookieFallback");
+  } catch {}
+}
+
+export async function setMfaEnabled(enabled: boolean) {
+  if (!account) throw new Error("Auth is not configured");
+  await account.updateMFA(enabled);
+}
+
+/** recovery codes for the enabled account — generates the first set on demand */
+export async function getOrCreateRecoveryCodes(): Promise<string[]> {
+  if (!account) throw new Error("Auth is not configured");
+  try {
+    const existing = await account.getMfaRecoveryCodes();
+    if (existing.recoveryCodes.length > 0) return existing.recoveryCodes;
+  } catch {
+    // none generated yet
   }
+  const created = await account.createMfaRecoveryCodes();
+  return created.recoveryCodes;
 }
 
 export async function signUp(name: string, email: string, password: string) {

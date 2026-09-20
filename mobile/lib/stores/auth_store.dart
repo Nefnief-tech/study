@@ -7,7 +7,25 @@ class AuthUser {
   final String email;
   final String name;
   final bool emailVerified;
-  const AuthUser(this.id, this.email, this.name, {this.emailVerified = false});
+  final bool mfa;
+  const AuthUser(
+    this.id,
+    this.email,
+    this.name, {
+    this.emailVerified = false,
+    this.mfa = false,
+  });
+}
+
+/// thrown by signIn when the account requires a second factor — the pending
+/// session can only answer MFA challenges until confirmMfaSignIn completes it
+class MfaRequiredException implements Exception {
+  final bool emailFactor;
+  final bool totpFactor;
+  MfaRequiredException({this.emailFactor = true, this.totpFactor = false});
+
+  @override
+  String toString() => 'Two-factor authentication is required.';
 }
 
 enum SyncStatus { unconfigured, loading, signedOut, signedIn }

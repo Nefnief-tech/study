@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../appwrite/sync.dart';
 import '../services/push.dart';
@@ -11,8 +12,8 @@ import '../utils/utils.dart';
 import 'controls.dart';
 
 /// Port of AuthModal.tsx — sign in / create account / account management,
-/// plus the device-local server URL setting, push status, email verification
-/// and password recovery.
+/// plus the device-local server URL setting, push status, email verification,
+/// password recovery and two-factor authentication.
 class AuthSheet extends StatefulWidget {
   const AuthSheet({super.key});
 
@@ -32,6 +33,23 @@ class _AuthSheetState extends State<AuthSheet> {
   bool _verifySent = false;
   String _recoveryError = '';
   String _verifyError = '';
+
+  // two-factor sign-in step
+  bool _mfaEmailFactor = true;
+  bool _mfaTotpFactor = false;
+  String _mfaFactor = 'email';
+  String? _mfaChallengeId;
+  bool _mfaSending = false;
+  final _mfaCode = TextEditingController();
+  bool _mfaBusy = false;
+
+  // two-factor setup (signed in)
+  bool _mfaSetupBusy = false;
+  bool _mfaDisableConfirm = false;
+  List<String>? _recoveryCodes;
+  final _mfaSetupError = ValueNotifier<String>('');
+  final _mfaStepError = ValueNotifier<String>('');
+
   final _name = TextEditingController();
   final _email = TextEditingController();
   final _password = TextEditingController();
@@ -55,6 +73,9 @@ class _AuthSheetState extends State<AuthSheet> {
     _email.dispose();
     _password.dispose();
     _server.dispose();
+    _mfaCode.dispose();
+    _mfaSetupError.dispose();
+    _mfaStepError.dispose();
     super.dispose();
   }
 
@@ -88,6 +109,119 @@ class _AuthSheetState extends State<AuthSheet> {
     }
   }
 
+  // ---- two-factor sign-in step ----
+
+  bool _mfaStepActive = false;
+
+  void _enterMfaStep(MfaRequiredException e) {
+    setState(() {
+      _mfaStepActive = true;
+      _mfaEmailFactor = e.emailFactor;
+      _mfaTotpFactor = e.totpFactor;
+      _mfaFactor = e.totpFactor ? 'totp' : 'email';
+      _mfaChallengeId = null;
+      _mfaCode.clear();
+      _mfaStepError.value = '';
+    });
+    if (_mfaFactor != 'recoverycode') unawaited(_startChallenge(_mfaFactor));
+  }
+
+  Future<void> _startChallenge(String factor) async {
+    setState(() => _mfaSending = true);
+    try {
+      final id = await startMfaChallenge(factor);
+      if (mounted) setState(() => _mfaChallengeId = id);
+    } catch (e) {
+      _mfaStepError.value = _friendlyMfaError(e.toString());
+    } finally {
+      if (mounted) setState(() => _mfaSending = false);
+    }
+  }
+
+  void _switchMfaFactor(String f) {
+    if (f == _mfaFactor) return;
+    setState(() {
+      _mfaFactor = f;
+      _mfaChallengeId = null;
+      _mfaCode.clear();
+      _mfaStepError.value = '';
+    });
+    if (f != 'recoverycode') unawaited(_startChallenge(f));
+  }
+
+  void _resendMfaCode() {
+    _mfaStepError.value = '';
+    unawaited(_startChallenge('email'));
+  }
+
+  Future<void> _confirmMfa() async {
+    final challengeId = _mfaChallengeId;
+    if (challengeId == null) return;
+    _mfaStepError.value = '';
+    setState(() => _mfaBusy = true);
+    try {
+      await confirmMfaSignIn(challengeId, _mfaCode.text.trim());
+      if (mounted) Navigator.of(context).pop();
+    } catch (e) {
+      _mfaStepError.value = _friendlyMfaError(e.toString());
+    } finally {
+      if (mounted) setState(() => _mfaBusy = false);
+    }
+  }
+
+  Future<void> _cancelMfa() async {
+    await cancelMfaSignIn();
+    if (mounted) {
+      setState(() {
+        _mfaStepActive = false;
+        _mfaChallengeId = null;
+        _mfaCode.clear();
+      });
+    }
+  }
+
+  // ---- two-factor setup (signed in) ----
+
+  Future<void> _enableMfa() async {
+    _mfaSetupError.value = '';
+    setState(() => _mfaSetupBusy = true);
+    try {
+      await setMfaEnabled(true);
+      final codes = await getOrCreateRecoveryCodes();
+      if (mounted) setState(() => _recoveryCodes = codes);
+    } catch (e) {
+      _mfaSetupError.value = _friendlyAuthError(e.toString());
+    } finally {
+      if (mounted) setState(() => _mfaSetupBusy = false);
+    }
+  }
+
+  Future<void> _disableMfa() async {
+    _mfaSetupError.value = '';
+    setState(() => _mfaSetupBusy = true);
+    try {
+      await setMfaEnabled(false);
+      if (mounted) setState(() => _mfaDisableConfirm = false);
+    } catch (e) {
+      _mfaSetupError.value = _friendlyAuthError(e.toString());
+    } finally {
+      if (mounted) setState(() => _mfaSetupBusy = false);
+    }
+  }
+
+  String _friendlyMfaError(String raw) {
+    if (raw.contains('rate')) return 'Too many attempts — wait a minute and try again.';
+    if (raw.contains('challenge') || raw.contains('expired')) {
+      return 'This code request ran out — send a new one.';
+    }
+    if (raw.contains('invalid') || raw.contains('token') || raw.contains('credentials')) {
+      return "That code isn't right — check the newest email (or recovery code) and try again.";
+    }
+    if (raw.contains('smtp')) return "The mail server isn't configured for this project yet.";
+    if (raw.length > 200) return raw.substring(0, 200);
+    return raw;
+  }
+
   Future<void> _submit() async {
     setState(() {
       _error = '';
@@ -102,6 +236,9 @@ class _AuthSheetState extends State<AuthSheet> {
       await PushService.onSignIn();
       _password.clear();
       if (mounted) Navigator.of(context).pop();
+    } on MfaRequiredException catch (e) {
+      _password.clear();
+      _enterMfaStep(e);
     } catch (e) {
       setState(() => _error = _friendlyAuthError(e.toString()));
     } finally {
@@ -276,6 +413,172 @@ class _AuthSheetState extends State<AuthSheet> {
                       .copyWith(color: sem.accent),
                 ),
               ],
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: sem.paper,
+                  border: Border.all(color: sem.line),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'TWO-FACTOR VIA EMAIL',
+                            style: Theme.of(context).textTheme.labelSmall!.copyWith(
+                                  color: sem.inkSoft,
+                                  letterSpacing: 1.2,
+                                ),
+                          ),
+                        ),
+                        Icon(
+                          Stores.I.auth.user!.mfa
+                              ? Icons.verified_user_outlined
+                              : Icons.gpp_maybe_outlined,
+                          size: 16,
+                          color: Stores.I.auth.user!.mfa ? sem.accent : sem.inkSoft,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    if (!Stores.I.auth.user!.mfa && !_mfaDisableConfirm)
+                      SemGhostButton(
+                        onPressed: _mfaSetupBusy ? null : _enableMfa,
+                        child: _mfaSetupBusy
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.verified_user_outlined, size: 16),
+                                  SizedBox(width: 6),
+                                  Text('Enable 2FA'),
+                                ],
+                              ),
+                      ),
+                    if (Stores.I.auth.user!.mfa && !_mfaDisableConfirm)
+                      SemGhostButton(
+                        onPressed: _mfaSetupBusy ? null : () => setState(() => _mfaDisableConfirm = true),
+                        foreground: sem.marker,
+                        border: sem.marker.withValues(alpha: 0.4),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.gpp_bad_outlined, size: 16),
+                            SizedBox(width: 6),
+                            Text('Disable 2FA'),
+                          ],
+                        ),
+                      ),
+                    if (_mfaDisableConfirm && !_mfaSetupBusy)
+                      Text(
+                        'Turn off two-factor? You\'ll sign in with just the password again. '
+                        'This cannot be undone from here without re-enabling.',
+                        style: Theme.of(context).textTheme.labelSmall!.copyWith(height: 1.5),
+                      ),
+                    if (_mfaDisableConfirm)
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          TextButton(
+                            onPressed: _disableMfa,
+                            child: Text('Yes, disable',
+                                style: TextStyle(color: sem.marker, fontSize: 12)),
+                          ),
+                          TextButton(
+                            onPressed: () => setState(() => _mfaDisableConfirm = false),
+                            child: const Text('keep it on', style: TextStyle(fontSize: 12)),
+                          ),
+                        ],
+                      ),
+                    ValueListenableBuilder<String>(
+                      valueListenable: _mfaSetupError,
+                      builder: (context, err, _) => err.isEmpty
+                          ? const SizedBox.shrink()
+                          : Text(err, style: TextStyle(color: sem.marker, fontSize: 13)),
+                    ),
+                    if (!Stores.I.auth.user!.mfa)
+                      Text(
+                        'asks for an emailed code at every sign-in · needs a verified email',
+                        style: Theme.of(context).textTheme.labelSmall!.copyWith(height: 1.5),
+                      ),
+                  ],
+                ),
+              ),
+              if (_recoveryCodes != null) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: sem.paper,
+                    border: Border.all(color: sem.accent.withValues(alpha: 0.5)),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Two-factor is on. Save these recovery codes — each works once '
+                        'instead of an emailed code, and they are the only way back if '
+                        'you lose access to your inbox.',
+                        style: Theme.of(context).textTheme.labelSmall!.copyWith(height: 1.5),
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: sem.card,
+                          border: Border.all(color: sem.line),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            for (final code in _recoveryCodes!)
+                              Text(code,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelSmall!
+                                      .copyWith(fontFamily: 'monospace')),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: SemGhostButton(
+                              onPressed: () async {
+                                await Clipboard.setData(
+                                    ClipboardData(text: _recoveryCodes!.join('\n')));
+                                if (mounted) setState(() {});
+                              },
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [Icon(Icons.copy_outlined, size: 16), SizedBox(width: 6), Text('Copy')],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: SemPrimaryButton(
+                              onPressed: () => setState(() => _recoveryCodes = null),
+                              child: const Text('Done'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               if (PushService.available) ...[
                 const SizedBox(height: 4),
                 Text(
@@ -323,7 +626,133 @@ class _AuthSheetState extends State<AuthSheet> {
               ),
             ],
 
-            if (!signedInNow && Stores.I.auth.status != SyncStatus.loading) ...[
+            if (!signedInNow && Stores.I.auth.status != SyncStatus.loading && _mfaStepActive) ...[
+              Text(
+                'Two-factor',
+                style: Theme.of(context)
+                    .textTheme
+                    .titleMedium!
+                    .copyWith(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                _mfaFactor == 'email'
+                    ? 'We sent a code to your email — it expires in 15 minutes.'
+                    : _mfaFactor == 'totp'
+                        ? 'Use your authenticator app to continue.'
+                        : 'Use one of the recovery codes you saved when enabling 2FA.',
+                style: Theme.of(context).textTheme.labelSmall!.copyWith(height: 1.5),
+              ),
+              if (_mfaFactor == 'email' && _mfaChallengeId == null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _mfaSending ? 'sending the code…' : 'the code could not be sent — try resending',
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+              ],
+              const SizedBox(height: 14),
+              const SemLabel('Code'),
+              TextField(
+                controller: _mfaCode,
+                keyboardType:
+                    _mfaFactor == 'recoverycode' ? TextInputType.text : TextInputType.number,
+                textInputAction: TextInputAction.done,
+                onSubmitted: (_) => _confirmMfa(),
+              ),
+              const SizedBox(height: 12),
+              ValueListenableBuilder<String>(
+                valueListenable: _mfaStepError,
+                builder: (context, err, _) => err.isEmpty
+                    ? const SizedBox.shrink()
+                    : Text(err, style: TextStyle(color: sem.marker, fontSize: 13)),
+              ),
+              const SizedBox(height: 12),
+              SemPrimaryButton(
+                onPressed: (_mfaBusy || _mfaChallengeId == null) ? null : _confirmMfa,
+                child: _mfaBusy
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Text('Verify code'),
+              ),
+              const SizedBox(height: 4),
+              Wrap(
+                spacing: 12,
+                children: [
+                  TextButton(
+                    onPressed: _cancelMfa,
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 0),
+                      minimumSize: const Size(0, 32),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: Text('back to sign in',
+                        style: Theme.of(context)
+                            .textTheme
+                            .labelSmall!
+                            .copyWith(color: sem.inkSoft)),
+                  ),
+                  if (_mfaFactor != 'email' && _mfaEmailFactor)
+                    TextButton(
+                      onPressed: () => _switchMfaFactor('email'),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 0),
+                        minimumSize: const Size(0, 32),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Text('email code',
+                          style: Theme.of(context)
+                              .textTheme
+                              .labelSmall!
+                              .copyWith(color: sem.inkSoft)),
+                    ),
+                  if (_mfaFactor != 'totp' && _mfaTotpFactor)
+                    TextButton(
+                      onPressed: () => _switchMfaFactor('totp'),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 0),
+                        minimumSize: const Size(0, 32),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Text('authenticator',
+                          style: Theme.of(context)
+                              .textTheme
+                              .labelSmall!
+                              .copyWith(color: sem.inkSoft)),
+                    ),
+                  if (_mfaFactor != 'recoverycode')
+                    TextButton(
+                      onPressed: () => _switchMfaFactor('recoverycode'),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 0),
+                        minimumSize: const Size(0, 32),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Text('recovery code',
+                          style: Theme.of(context)
+                              .textTheme
+                              .labelSmall!
+                              .copyWith(color: sem.inkSoft)),
+                    ),
+                  if (_mfaFactor == 'email' && _mfaChallengeId != null)
+                    TextButton(
+                      onPressed: _resendMfaCode,
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 0),
+                        minimumSize: const Size(0, 32),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Text('resend',
+                          style: Theme.of(context)
+                              .textTheme
+                              .labelSmall!
+                              .copyWith(color: sem.inkSoft)),
+                    ),
+                ],
+              ),
+            ],
+            if (!signedInNow && Stores.I.auth.status != SyncStatus.loading && !_mfaStepActive) ...[
               if (_recovery) ...[
                 Text(
                   'Forgot your password?',

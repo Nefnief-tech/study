@@ -31,6 +31,7 @@ export interface AuthUser {
   email: string;
   name: string;
   emailVerified: boolean;
+  mfa: boolean;
 }
 
 export async function getCurrentUser(): Promise<AuthUser | null> {
@@ -42,10 +43,28 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
       email: user.email,
       name: user.name || user.email,
       emailVerified: user.emailVerification,
+      mfa: user.mfa,
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * getCurrentUser for the sign-in path — surfaces the error instead of
+ * swallowing it, so a pending-MFA session can be told apart from a
+ * signed-out one.
+ */
+export async function requireCurrentUser(): Promise<AuthUser> {
+  if (!account) throw new Error("Auth is not configured");
+  const user = await account.get();
+  return {
+    id: user.$id,
+    email: user.email,
+    name: user.name || user.email,
+    emailVerified: user.emailVerification,
+    mfa: user.mfa,
+  };
 }
 
 /** confirms the SDK setup — logged once at app start (see AppShell) */
