@@ -46,6 +46,10 @@ Both clients speak the same protocol against Appwrite **TablesDB** (database `se
   <img src="docs/architecture.png" alt="Semester sync architecture — web app and Android app exchange structured rows with Appwrite Cloud (TablesDB, Storage, push messages); the daily-digest Appwrite function reads the same data" width="520" />
 </div>
 
+- **Auto-save everywhere** — forms have no save button: text edits commit debounced
+  (~0.4 s), picks (priority, subject, date, color) commit instantly, and closing a form
+  can never lose input. Every commit lands in the persisted store, which is what feeds
+  the push pipeline below.
 - **Push** — local changes are diffed against last-synced content digests and upserted
   (debounced ~1.2 s); removed entities get a `deleted` tombstone row.
 - **Pull** — on sign-in and via realtime events, cloud rows merge in; entities with
@@ -140,6 +144,11 @@ document text persists in the mounted `./.data` volume. Deploy the digest functi
   `@theme inline` — never hardcode a hex.
 - Subjects are shared across features; deleting one cascades (grades removed, tasks
   detached).
+- Every data form auto-saves (web modals and mobile sheets behave identically): the
+  first valid input live-creates the entity — store `add*` actions return the new id —
+  and the header flips "New …" → "Edit …". An emptied title keeps its last saved value;
+  a close-time flush falls back to "Untitled" (events: today's date) when content
+  exists but no title was typed. Grades without valid points are not created.
 
 ## Roadmap ideas
 

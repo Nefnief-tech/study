@@ -29,22 +29,21 @@ class TodosStore extends PersistedStore {
         .toList();
   }
 
-  void addTodo(TodoInput input) {
-    _todos = [
-      Todo(
-        id: uid(),
-        title: input.title.trim(),
-        notes: input.notes,
-        due: input.due,
-        priority: input.priority,
-        subjectId: input.subjectId,
-        done: false,
-        createdAt: DateTime.now().millisecondsSinceEpoch,
-      ),
-      ..._todos,
-    ];
+  String addTodo(TodoInput input) {
+    final todo = Todo(
+      id: uid(),
+      title: input.title.trim(),
+      notes: input.notes,
+      due: input.due,
+      priority: input.priority,
+      subjectId: input.subjectId,
+      done: false,
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    _todos = [todo, ..._todos];
     notifyListeners();
     persist();
+    return todo.id;
   }
 
   void updateTodo(String id, Todo patch, {bool clearNotes = false, bool clearDue = false, bool clearSubject = false}) {

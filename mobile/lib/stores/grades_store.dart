@@ -59,20 +59,19 @@ class GradesStore extends PersistedStore {
     _entries = normalizeGradeEntries(state['entries']);
   }
 
-  void addEntry(GradeInput input) {
-    _entries = [
-      ..._entries,
-      GradeEntry(
-        id: uid(),
-        subjectId: input.subjectId,
-        title: input.title.trim(),
-        points: input.points,
-        weight: input.weight,
-        date: input.date,
-      ),
-    ];
+  String addEntry(GradeInput input) {
+    final entry = GradeEntry(
+      id: uid(),
+      subjectId: input.subjectId,
+      title: input.title.trim(),
+      points: input.points,
+      weight: input.weight,
+      date: input.date,
+    );
+    _entries = [..._entries, entry];
     notifyListeners();
     persist();
+    return entry.id;
   }
 
   void updateEntry(String id, GradeEntry patch, {bool clearDate = false}) {

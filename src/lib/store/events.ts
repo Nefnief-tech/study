@@ -14,7 +14,7 @@ export interface EventInput {
 
 interface EventsState {
   events: StudyEvent[];
-  addEvent: (input: EventInput) => void;
+  addEvent: (input: EventInput) => string;
   updateEvent: (id: string, patch: Partial<StudyEvent>) => void;
   removeEvent: (id: string) => void;
   upsertOne: (event: StudyEvent) => void;
@@ -27,10 +27,11 @@ export const useEventsStore = create<EventsState>()(
   persist(
     (set) => ({
       events: [],
-      addEvent: (input) =>
-        set((s) => ({
-          events: [...s.events, { ...input, title: input.title.trim(), id: uid() }],
-        })),
+      addEvent: (input) => {
+        const event: StudyEvent = { ...input, title: input.title.trim(), id: uid() };
+        set((s) => ({ events: [...s.events, event] }));
+        return event.id;
+      },
       updateEvent: (id, patch) =>
         set((s) => ({
           events: s.events.map((e) =>

@@ -33,7 +33,7 @@ export interface GradeInput {
 
 interface GradesState {
   entries: GradeEntry[];
-  addEntry: (input: GradeInput) => void;
+  addEntry: (input: GradeInput) => string;
   updateEntry: (id: string, patch: Partial<GradeEntry>) => void;
   removeEntry: (id: string) => void;
   upsertOne: (entry: GradeEntry) => void;
@@ -47,8 +47,11 @@ export const useGradesStore = create<GradesState>()(
   persist(
     (set) => ({
       entries: [],
-      addEntry: (input) =>
-        set((s) => ({ entries: [...s.entries, { ...input, title: input.title.trim(), id: uid() }] })),
+      addEntry: (input) => {
+        const entry: GradeEntry = { ...input, title: input.title.trim(), id: uid() };
+        set((s) => ({ entries: [...s.entries, entry] }));
+        return entry.id;
+      },
       updateEntry: (id, patch) =>
         set((s) => ({
           entries: s.entries.map((e) =>

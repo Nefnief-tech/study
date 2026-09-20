@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../models/types.dart';
@@ -543,50 +545,87 @@ class _EventFormSheetState extends State<EventFormSheet> {
   late String? _day = widget.event?.date ?? widget.date;
   late String? _time = widget.event?.time;
   late String? _subjectId = widget.event?.subjectId;
-  String _error = '';
+  // auto-save: text edits commit debounced, discrete picks immediately —
+  // the sheet can be dismissed at any moment without losing input
+  Timer? _debounce;
+  bool _dirty = false;
+  String? _createdId;
+
+  String? get _targetId => widget.event?.id ?? _createdId;
 
   @override
   void dispose() {
+    _debounce?.cancel();
+    if (_dirty) _commit(relaxed: true);
     _title.dispose();
     _notes.dispose();
     super.dispose();
   }
 
-  void _submit() {
+  void _commitSoon() {
+    _dirty = true;
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 400), _commit);
+  }
+
+  void _commitNow() {
+    _dirty = true;
+    _debounce?.cancel();
+    _commit();
+  }
+
+  /// writes the form into the store; the close-time flush (`relaxed`) falls
+  /// back to "Untitled"/today when content exists but title/date are missing
+  void _commit({bool relaxed = false}) {
     final title = _title.text.trim();
-    if (title.isEmpty) {
-      setState(() => _error = 'Give it a title.');
-      return;
-    }
-    if (_day == null || _day!.isEmpty) {
-      setState(() => _error = 'Pick a date.');
-      return;
-    }
+    final notes = _notes.text.trim();
+    final isCreate = widget.event == null && _createdId == null;
+    final hasExtras =
+        notes.isNotEmpty || _time != null || _subjectId != null || _type != EventType.study;
+    final t = title.isEmpty && relaxed && isCreate && hasExtras ? 'Untitled' : title;
+    if (t.isEmpty) return; // nothing to create yet / emptied title keeps its last value
+    final day = (_day == null || _day!.isEmpty)
+        ? (relaxed && isCreate ? toDayKey(DateTime.now()) : null)
+        : _day;
+    if (day == null || day.isEmpty) return;
     final stores = Stores.I;
-    if (widget.event != null) {
+    if (_targetId != null) {
+      StudyEvent? current;
+      for (final x in stores.events.events) {
+        if (x.id == _targetId) current = x;
+      }
+      if (current == null) return;
       stores.events.updateEvent(
-        widget.event!.id,
-        widget.event!.copyWith(
-          title: title,
-          date: _day,
+        current.id,
+        current.copyWith(
+          title: t,
+          date: day,
           time: _time,
           type: _type,
           subjectId: _subjectId,
-          notes: _notes.text.trim().isEmpty ? null : _notes.text.trim(),
+          notes: notes.isEmpty ? null : notes,
         ),
         clearTime: _time == null,
         clearSubject: _subjectId == null,
-        clearNotes: _notes.text.trim().isEmpty,
+        clearNotes: notes.isEmpty,
       );
     } else {
-      stores.events.addEvent(EventInput(
-        title,
-        date: _day!,
+      _createdId = stores.events.addEvent(EventInput(
+        t,
+        date: day,
         time: _time,
         type: _type,
         subjectId: _subjectId,
-        notes: _notes.text.trim().isEmpty ? null : _notes.text.trim(),
+        notes: notes.isEmpty ? null : notes,
       ));
+    }
+  }
+
+  void _flushAndClose() {
+    _debounce?.cancel();
+    if (_dirty) {
+      _dirty = false;
+      _commit(relaxed: true);
     }
     Navigator.of(context).pop();
   }
@@ -601,6 +640,7 @@ class _EventFormSheetState extends State<EventFormSheet> {
         TextField(
           controller: _title,
           autofocus: widget.event == null,
+          onChanged: (_) => _commitSoon(),
           decoration: const InputDecoration(hintText: 'e.g. Library session, History midterm…'),
         ),
         const SizedBox(height: 14),
@@ -617,7 +657,10 @@ class _EventFormSheetState extends State<EventFormSheet> {
                     label: _day ?? '—',
                     onTap: () async {
                       final picked = await pickDate(context, _day);
-                      if (picked != null) setState(() => _day = picked);
+                      if (picked != null && picked != _day) {
+                        setState(() => _day = picked);
+                        _commitNow();
+                      }
                     },
                   ),
                 ],
@@ -635,7 +678,10 @@ class _EventFormSheetState extends State<EventFormSheet> {
                     label: _time ?? '—',
                     onTap: () async {
                       final picked = await pickTime(context, _time);
-                      if (picked != null) setState(() => _time = picked);
+                      if (picked != null && picked != _time) {
+                        setState(() => _time = picked);
+                        _commitNow();
+                      }
                     },
                   ),
                 ],
@@ -651,7 +697,10 @@ class _EventFormSheetState extends State<EventFormSheet> {
           children: [
             for (final t in EventType.values)
               InkWell(
-                onTap: () => setState(() => _type = t),
+                onTap: () {
+                  setState(() => _type = t);
+                  _commitNow();
+                },
                 borderRadius: BorderRadius.circular(10),
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
@@ -673,25 +722,30 @@ class _EventFormSheetState extends State<EventFormSheet> {
           ],
         ),
         const SizedBox(height: 14),
-        SubjectSelect(value: _subjectId, onChanged: (v) => setState(() => _subjectId = v)),
+        SubjectSelect(
+          value: _subjectId,
+          onChanged: (v) {
+            setState(() => _subjectId = v);
+            _commitNow();
+          },
+        ),
         const SizedBox(height: 14),
         const SemLabel('Notes (optional)'),
         TextField(
           controller: _notes,
           minLines: 2,
           maxLines: 4,
+          onChanged: (_) => _commitSoon(),
           decoration: const InputDecoration(hintText: 'Room, materials to bring…'),
         ),
-        if (_error.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          Text(_error, style: TextStyle(color: sem.marker, fontSize: 13)),
-        ],
         const SizedBox(height: 18),
         Row(
           children: [
             if (widget.event != null)
               SemGhostButton(
                 onPressed: () {
+                  _debounce?.cancel();
+                  _dirty = false;
                   Stores.I.events.removeEvent(widget.event!.id);
                   Navigator.of(context).pop();
                 },
@@ -703,12 +757,16 @@ class _EventFormSheetState extends State<EventFormSheet> {
                 ),
               ),
             const Spacer(),
-            SemGhostButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-            const SizedBox(width: 8),
-            SemPrimaryButton(onPressed: _submit, child: Text(widget.event == null ? 'Add entry' : 'Save changes')),
+            if (widget.event == null)
+              Text(
+                'Saves automatically',
+                style: Theme.of(context)
+                    .textTheme
+                    .labelSmall!
+                    .copyWith(color: sem.inkSoft),
+              ),
+            const SizedBox(width: 10),
+            SemPrimaryButton(onPressed: _flushAndClose, child: const Text('Done')),
           ],
         ),
       ],

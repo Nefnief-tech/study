@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Trash2 } from "lucide-react";
 import type { GradeEntry } from "@/lib/types";
 import { useGradesStore, type GradeInput } from "@/lib/store/grades";
 import { useSubjectsStore } from "@/lib/store/subjects";
 import { pointsToGrade } from "@/lib/utils";
+import { useDebouncedCallback } from "@/lib/hooks";
 import Modal from "@/components/ui/Modal";
 import { cn } from "@/lib/utils";
 
@@ -30,40 +31,51 @@ export default function GradeFormModal({
   const [points, setPoints] = useState("");
   const [weight, setWeight] = useState("20");
   const [date, setDate] = useState("");
-  const [error, setError] = useState("");
+  // an existing entry, or the one auto-created from this form's first valid edit
+  const [createdId, setCreatedId] = useState<string | undefined>(undefined);
+  const targetId = entry?.id ?? createdId;
+  const dirtyRef = useRef(false);
+
+  const commit = () => {
+    const p = parseFloat(points);
+    const w = parseFloat(weight);
+    const t = title.trim();
+    if (!t || !Number.isFinite(p) || p < 0 || p > 15 || !Number.isFinite(w) || w <= 0) return;
+    if (targetId) {
+      updateEntry(targetId, { title: t, points: p, weight: w, date: date || undefined });
+    } else {
+      const sid = subjectId ?? subjects[0]?.id ?? "";
+      if (!sid) return;
+      const input: GradeInput = { subjectId: sid, title: t, points: p, weight: w, date: date || undefined };
+      setCreatedId(addEntry(input));
+    }
+  };
+  const commitSoon = useDebouncedCallback(() => commit(), 400);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      commitSoon.cancel();
+      return;
+    }
     setTitle(entry?.title ?? "");
     setPoints(entry ? String(entry.points) : "");
     setWeight(entry ? String(entry.weight) : "20");
     setDate(entry?.date ?? "");
-    setError("");
-  }, [open, entry]);
+    setCreatedId(undefined);
+    dirtyRef.current = false;
+  }, [open, entry, commitSoon]);
 
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const p = parseFloat(points);
-    const w = parseFloat(weight);
-    if (!title.trim()) return setError("What was graded? Add a title.");
-    if (!Number.isFinite(p) || p < 0 || p > 15) return setError("Points must be between 0 and 15.");
-    if (!Number.isFinite(w) || w <= 0) return setError("Weight must be a positive number.");
-    const trimmedTitle = title.trim();
-    if (entry) {
-      updateEntry(entry.id, { title: trimmedTitle, points: p, weight: w, date: date || undefined });
-    } else {
-      const input: GradeInput = {
-        subjectId: subjectId ?? subjects[0]?.id ?? "",
-        title: trimmedTitle,
-        points: p,
-        weight: w,
-        date: date || undefined,
-      };
-      if (!input.subjectId) {
-        setError("Create a subject first.");
-        return;
-      }
-      addEntry(input);
+  /** text-ish edits: save debounced (only once title + points + weight are all valid) */
+  const edit = (set: (v: string) => void) => (value: string) => {
+    set(value);
+    dirtyRef.current = true;
+    commitSoon.run();
+  };
+  const close = () => {
+    if (dirtyRef.current) {
+      commitSoon.cancel();
+      dirtyRef.current = false;
+      commit();
     }
     onClose();
   };
@@ -74,8 +86,14 @@ export default function GradeFormModal({
       : null;
 
   return (
-    <Modal open={open} onClose={onClose} title={entry ? "Edit grade" : "Add grade"}>
-      <form onSubmit={submit} className="space-y-4">
+    <Modal open={open} onClose={close} title={targetId ? "Edit grade" : "Add grade"}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          close();
+        }}
+        className="space-y-4"
+      >
         <div>
           <label className="label" htmlFor="grade-title">
             Title
@@ -86,7 +104,7 @@ export default function GradeFormModal({
             autoFocus
             placeholder="e.g. Test, Abfrage, Essay"
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => edit(setTitle)(e.target.value)}
           />
         </div>
 
@@ -104,7 +122,7 @@ export default function GradeFormModal({
               step="1"
               className="field font-mono"
               value={points}
-              onChange={(e) => setPoints(e.target.value)}
+              onChange={(e) => edit(setPoints)(e.target.value)}
             />
             {preview && (
               <p className="mt-1 font-mono text-[11px] text-ink-soft">
@@ -124,7 +142,7 @@ export default function GradeFormModal({
               step="any"
               className="field font-mono"
               value={weight}
-              onChange={(e) => setWeight(e.target.value)}
+              onChange={(e) => edit(setWeight)(e.target.value)}
             />
           </div>
           <div>
@@ -136,7 +154,7 @@ export default function GradeFormModal({
               type="date"
               className="field font-mono"
               value={date}
-              onChange={(e) => setDate(e.target.value)}
+              onChange={(e) => edit(setDate)(e.target.value)}
             />
           </div>
         </div>
@@ -149,7 +167,11 @@ export default function GradeFormModal({
               <button
                 key={p}
                 type="button"
-                onClick={() => setPoints(String(p))}
+                onClick={() => {
+                  setPoints(String(p));
+                  dirtyRef.current = true;
+                  commit();
+                }}
                 className={cn(
                   "cursor-pointer rounded-md border py-1.5 font-mono text-xs transition-colors",
                   points === String(p)
@@ -163,31 +185,28 @@ export default function GradeFormModal({
           </div>
         </div>
 
-        {error && <p className="text-sm text-marker">{error}</p>}
+        {!subjects.length && !targetId && (
+          <p className="text-sm text-marker">Create a subject first.</p>
+        )}
 
-        <div className="flex justify-between gap-2 pt-1">
-          {entry ? (
+        <div className="flex items-center justify-between gap-2 pt-1">
+          {targetId ? (
             <button
               type="button"
               className="btn-ghost text-marker hover:border-marker/40"
               onClick={() => {
-                removeEntry(entry.id);
+                removeEntry(targetId);
                 onClose();
               }}
             >
               <Trash2 className="size-4" /> Delete
             </button>
           ) : (
-            <span />
+            <span className="text-xs text-ink-soft">Saves automatically</span>
           )}
-          <div className="flex gap-2">
-            <button type="button" className="btn-ghost" onClick={onClose}>
-              Cancel
-            </button>
-            <button type="submit" className="btn-primary">
-              {entry ? "Save changes" : "Add grade"}
-            </button>
-          </div>
+          <button type="submit" className="btn-primary">
+            Done
+          </button>
         </div>
       </form>
     </Modal>

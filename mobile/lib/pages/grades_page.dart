@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../models/types.dart';
@@ -409,27 +411,58 @@ class SubjectFormSheet extends StatefulWidget {
 
 class _SubjectFormSheetState extends State<SubjectFormSheet> {
   late final TextEditingController _name = TextEditingController(text: widget.subject?.name ?? '');
-  late String _color = widget.subject?.color ??
+  late final String _initialColor = widget.subject?.color ??
       PALETTE[(DateTime.now().millisecondsSinceEpoch ~/ 1000) % PALETTE.length];
-  String _error = '';
+  late String _color = _initialColor;
+  // auto-save: text edits commit debounced, discrete picks immediately —
+  // the sheet can be dismissed at any moment without losing input
+  Timer? _debounce;
+  bool _dirty = false;
+  String? _createdId;
+
+  String? get _targetId => widget.subject?.id ?? _createdId;
 
   @override
   void dispose() {
+    _debounce?.cancel();
+    if (_dirty) _commit(relaxed: true);
     _name.dispose();
     super.dispose();
   }
 
-  void _submit() {
+  void _commitSoon() {
+    _dirty = true;
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 400), _commit);
+  }
+
+  void _commitNow() {
+    _dirty = true;
+    _debounce?.cancel();
+    _commit();
+  }
+
+  /// writes the form into the store; the close-time flush (`relaxed`) falls
+  /// back to "Untitled" when a color was picked but no name was typed
+  void _commit({bool relaxed = false}) {
     final name = _name.text.trim();
-    if (name.isEmpty) {
-      setState(() => _error = 'Give the subject a name.');
-      return;
-    }
+    final isCreate = widget.subject == null && _createdId == null;
+    final hasContent = name.isNotEmpty || _color != _initialColor;
+    final t = name.isEmpty && relaxed && isCreate && hasContent ? 'Untitled' : name;
+    if (t.isEmpty) return; // nothing to create yet / emptied name keeps its last value
     final stores = Stores.I;
-    if (widget.subject != null) {
-      stores.subjects.updateSubject(widget.subject!.id, name: name, color: _color);
+    if (_targetId != null) {
+      stores.subjects.updateSubject(_targetId!, name: t, color: _color);
     } else {
-      stores.subjects.addSubject(AddSubjectInput(name, color: _color));
+      _createdId = stores.subjects.addSubject(AddSubjectInput(t, color: _color)).id;
+    }
+  }
+
+  void _flushAndClose() {
+    _debounce?.cancel();
+    if (_dirty) {
+      _dirty = false;
+      _commit(relaxed: true);
     }
     Navigator.of(context).pop();
   }
@@ -443,6 +476,7 @@ class _SubjectFormSheetState extends State<SubjectFormSheet> {
         TextField(
           controller: _name,
           autofocus: widget.subject == null,
+          onChanged: (_) => _commitSoon(),
           decoration: const InputDecoration(hintText: 'e.g. Mathematics'),
         ),
         const SizedBox(height: 14),
@@ -452,7 +486,10 @@ class _SubjectFormSheetState extends State<SubjectFormSheet> {
           children: [
             for (final c in PALETTE)
               InkWell(
-                onTap: () => setState(() => _color = c),
+                onTap: () {
+                  setState(() => _color = c);
+                  _commitNow();
+                },
                 customBorder: const CircleBorder(),
                 child: Container(
                   width: 32,
@@ -469,20 +506,24 @@ class _SubjectFormSheetState extends State<SubjectFormSheet> {
               ),
           ],
         ),
-        if (_error.isNotEmpty) ...[
+        if (_targetId == null && Stores.I.subjects.subjects.isEmpty) ...[
           const SizedBox(height: 8),
-          Text(_error, style: TextStyle(color: context.sem.marker, fontSize: 13)),
+          Text('Create a subject first.',
+              style: TextStyle(color: context.sem.marker, fontSize: 13)),
         ],
         const SizedBox(height: 18),
         Row(
-          mainAxisAlignment: MainAxisAlignment.end,
           children: [
-            SemGhostButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
+            Expanded(
+              child: Text(
+                'Saves automatically',
+                style: Theme.of(context)
+                    .textTheme
+                    .labelSmall!
+                    .copyWith(color: context.sem.inkSoft),
+              ),
             ),
-            const SizedBox(width: 8),
-            SemPrimaryButton(onPressed: _submit, child: Text(widget.subject == null ? 'Add subject' : 'Save changes')),
+            SemPrimaryButton(onPressed: _flushAndClose, child: const Text('Done')),
           ],
         ),
       ],
@@ -508,37 +549,52 @@ class _GradeFormSheetState extends State<GradeFormSheet> {
   late final TextEditingController _weight =
       TextEditingController(text: widget.entry == null ? '20' : '${widget.entry!.weight}');
   late String? _date = widget.entry?.date;
-  String _error = '';
+  // auto-save: text edits commit debounced, discrete picks immediately —
+  // the sheet can be dismissed at any moment without losing input
+  Timer? _debounce;
+  bool _dirty = false;
+  String? _createdId;
+
+  String? get _targetId => widget.entry?.id ?? _createdId;
 
   @override
   void dispose() {
+    _debounce?.cancel();
+    if (_dirty) _commit();
     _title.dispose();
     _points.dispose();
     _weight.dispose();
     super.dispose();
   }
 
-  void _submit() {
+  void _commitSoon() {
+    _dirty = true;
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 400), _commit);
+  }
+
+  void _commitNow() {
+    _dirty = true;
+    _debounce?.cancel();
+    _commit();
+  }
+
+  /// writes the form into the store once title + points + weight are all valid
+  void _commit() {
     final title = _title.text.trim();
     final p = num.tryParse(_points.text.replaceAll(',', '.'));
     final w = num.tryParse(_weight.text.replaceAll(',', '.'));
-    if (title.isEmpty) {
-      setState(() => _error = 'What was graded? Add a title.');
-      return;
-    }
-    if (p == null || p < 0 || p > 15) {
-      setState(() => _error = 'Points must be between 0 and 15.');
-      return;
-    }
-    if (w == null || w <= 0) {
-      setState(() => _error = 'Weight must be a positive number.');
-      return;
-    }
+    if (title.isEmpty || p == null || p < 0 || p > 15 || w == null || w <= 0) return;
     final stores = Stores.I;
-    if (widget.entry != null) {
+    if (_targetId != null) {
+      GradeEntry? current;
+      for (final x in stores.grades.entries) {
+        if (x.id == _targetId) current = x;
+      }
+      if (current == null) return;
       stores.grades.updateEntry(
-        widget.entry!.id,
-        widget.entry!.copyWith(
+        current.id,
+        current.copyWith(
           title: title,
           points: p,
           weight: w,
@@ -548,11 +604,16 @@ class _GradeFormSheetState extends State<GradeFormSheet> {
       );
     } else {
       final subject = widget.subjectId ?? Stores.I.subjects.subjects.firstOrNull?.id ?? '';
-      if (subject.isEmpty) {
-        setState(() => _error = 'Create a subject first.');
-        return;
-      }
-      stores.grades.addEntry(GradeInput(subject, title, points: p, weight: w, date: _date));
+      if (subject.isEmpty) return;
+      _createdId = stores.grades.addEntry(GradeInput(subject, title, points: p, weight: w, date: _date));
+    }
+  }
+
+  void _flushAndClose() {
+    _debounce?.cancel();
+    if (_dirty) {
+      _dirty = false;
+      _commit();
     }
     Navigator.of(context).pop();
   }
@@ -570,6 +631,7 @@ class _GradeFormSheetState extends State<GradeFormSheet> {
         TextField(
           controller: _title,
           autofocus: widget.entry == null,
+          onChanged: (_) => _commitSoon(),
           decoration: const InputDecoration(hintText: 'e.g. Test, Abfrage, Essay'),
         ),
         const SizedBox(height: 14),
@@ -583,7 +645,10 @@ class _GradeFormSheetState extends State<GradeFormSheet> {
                   TextField(
                     controller: _points,
                     keyboardType: TextInputType.number,
-                    onChanged: (_) => setState(() {}),
+                    onChanged: (_) {
+                      setState(() {});
+                      _commitSoon();
+                    },
                     decoration: const InputDecoration(hintText: '0–15'),
                   ),
                 ],
@@ -598,6 +663,7 @@ class _GradeFormSheetState extends State<GradeFormSheet> {
                   TextField(
                     controller: _weight,
                     keyboardType: TextInputType.number,
+                    onChanged: (_) => _commitSoon(),
                     decoration: const InputDecoration(hintText: '20'),
                   ),
                 ],
@@ -629,7 +695,10 @@ class _GradeFormSheetState extends State<GradeFormSheet> {
         InkWell(
           onTap: () async {
             final picked = await pickDate(context, _date);
-            setState(() => _date = picked);
+            if (picked != _date) {
+              setState(() => _date = picked);
+              _commitNow();
+            }
           },
           borderRadius: BorderRadius.circular(10),
           child: Container(
@@ -673,7 +742,10 @@ class _GradeFormSheetState extends State<GradeFormSheet> {
           children: [
             for (var i = 15; i >= 0; i--)
               InkWell(
-                onTap: () => setState(() => _points.text = '$i'),
+                onTap: () {
+                  setState(() => _points.text = '$i');
+                  _commitNow();
+                },
                 borderRadius: BorderRadius.circular(8),
                 child: Container(
                   alignment: Alignment.center,
@@ -693,9 +765,9 @@ class _GradeFormSheetState extends State<GradeFormSheet> {
               ),
           ],
         ),
-        if (_error.isNotEmpty) ...[
+        if (_targetId == null && Stores.I.subjects.subjects.isEmpty) ...[
           const SizedBox(height: 8),
-          Text(_error, style: TextStyle(color: sem.marker, fontSize: 13)),
+          Text('Create a subject first.', style: TextStyle(color: sem.marker, fontSize: 13)),
         ],
         const SizedBox(height: 18),
         Row(
@@ -703,6 +775,8 @@ class _GradeFormSheetState extends State<GradeFormSheet> {
             if (widget.entry != null)
               SemGhostButton(
                 onPressed: () {
+                  _debounce?.cancel();
+                  _dirty = false;
                   Stores.I.grades.removeEntry(widget.entry!.id);
                   Navigator.of(context).pop();
                 },
@@ -714,12 +788,16 @@ class _GradeFormSheetState extends State<GradeFormSheet> {
                 ),
               ),
             const Spacer(),
-            SemGhostButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-            const SizedBox(width: 8),
-            SemPrimaryButton(onPressed: _submit, child: Text(widget.entry == null ? 'Add grade' : 'Save changes')),
+            if (widget.entry == null)
+              Text(
+                'Saves automatically',
+                style: Theme.of(context)
+                    .textTheme
+                    .labelSmall!
+                    .copyWith(color: sem.inkSoft),
+              ),
+            const SizedBox(width: 10),
+            SemPrimaryButton(onPressed: _flushAndClose, child: const Text('Done')),
           ],
         ),
       ],

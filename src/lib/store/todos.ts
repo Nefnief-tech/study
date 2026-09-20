@@ -13,7 +13,7 @@ export interface TodoInput {
 
 interface TodosState {
   todos: Todo[];
-  addTodo: (input: TodoInput) => void;
+  addTodo: (input: TodoInput) => string;
   updateTodo: (id: string, patch: Partial<Todo>) => void;
   toggleTodo: (id: string) => void;
   removeTodo: (id: string) => void;
@@ -27,19 +27,17 @@ export const useTodosStore = create<TodosState>()(
   persist(
     (set) => ({
       todos: [],
-      addTodo: (input) =>
-        set((s) => ({
-          todos: [
-            {
-              ...input,
-              title: input.title.trim(),
-              id: uid(),
-              done: false,
-              createdAt: Date.now(),
-            },
-            ...s.todos,
-          ],
-        })),
+      addTodo: (input) => {
+        const todo: Todo = {
+          ...input,
+          title: input.title.trim(),
+          id: uid(),
+          done: false,
+          createdAt: Date.now(),
+        };
+        set((s) => ({ todos: [todo, ...s.todos] }));
+        return todo.id;
+      },
       updateTodo: (id, patch) =>
         set((s) => ({
           todos: s.todos.map((t) =>

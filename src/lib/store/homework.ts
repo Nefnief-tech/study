@@ -15,7 +15,7 @@ export interface HomeworkInput {
 
 interface HomeworkState {
   homeworks: Homework[];
-  addHomework: (input: HomeworkInput) => void;
+  addHomework: (input: HomeworkInput) => string;
   updateHomework: (id: string, patch: Partial<Homework>) => void;
   toggleHomework: (id: string) => void;
   removeHomework: (id: string) => void;
@@ -29,19 +29,17 @@ export const useHomeworkStore = create<HomeworkState>()(
   persist(
     (set) => ({
       homeworks: [],
-      addHomework: (input) =>
-        set((s) => ({
-          homeworks: [
-            {
-              ...input,
-              title: input.title.trim(),
-              id: uid(),
-              done: false,
-              createdAt: Date.now(),
-            },
-            ...s.homeworks,
-          ],
-        })),
+      addHomework: (input) => {
+        const homework: Homework = {
+          ...input,
+          title: input.title.trim(),
+          id: uid(),
+          done: false,
+          createdAt: Date.now(),
+        };
+        set((s) => ({ homeworks: [homework, ...s.homeworks] }));
+        return homework.id;
+      },
       updateHomework: (id, patch) =>
         set((s) => ({
           homeworks: s.homeworks.map((h) =>

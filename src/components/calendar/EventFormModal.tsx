@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Trash2 } from "lucide-react";
 import type { EventType, StudyEvent } from "@/lib/types";
 import { useEventsStore } from "@/lib/store/events";
+import type { EventInput } from "@/lib/store/events";
+import { useDebouncedCallback } from "@/lib/hooks";
 import Modal from "@/components/ui/Modal";
 import SubjectSelect from "@/components/ui/SubjectSelect";
 
@@ -14,10 +16,17 @@ const TYPES: Array<{ value: EventType; label: string }> = [
   { value: "event", label: "Event" },
 ];
 
+/** local-time yyyy-MM-dd, used when an untitled-and-undated entry gets saved on close */
+function today() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate(),
+  ).padStart(2, "0")}`;
+}
+
 export default function EventFormModal({
   open,
   onClose,
-  /** preselected date (yyyy-MM-dd) when creating from a calendar cell */
   date,
   event,
 }: {
@@ -36,39 +45,69 @@ export default function EventFormModal({
   const [time, setTime] = useState("");
   const [subjectId, setSubjectId] = useState<string | undefined>(undefined);
   const [notes, setNotes] = useState("");
-  const [error, setError] = useState("");
+  // an existing event, or the one auto-created from this form's first edit
+  const [createdId, setCreatedId] = useState<string | undefined>(undefined);
+  const targetId = event?.id ?? createdId;
+  const dirtyRef = useRef(false);
+
+  const commit = (relaxed = false) => {
+    const t = title.trim();
+    const hasExtras = !!(notes.trim() || time || subjectId || type !== "study");
+    // while editing, an emptied title keeps its last saved value
+    if (!t && (targetId || !(relaxed && hasExtras))) return;
+    if (!day && targetId) return;
+    const input: EventInput = {
+      title: t || "Untitled",
+      date: day || today(),
+      time: time || undefined,
+      type,
+      subjectId,
+      notes: notes.trim() || undefined,
+    };
+    if (targetId) updateEvent(targetId, input);
+    else setCreatedId(addEvent(input));
+  };
+  const commitSoon = useDebouncedCallback(() => commit(), 400);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      commitSoon.cancel();
+      return;
+    }
     setTitle(event?.title ?? "");
     setType(event?.type ?? "study");
     setDay(event?.date ?? date ?? "");
     setTime(event?.time ?? "");
     setSubjectId(event?.subjectId);
     setNotes(event?.notes ?? "");
-    setError("");
-  }, [open, event, date]);
+    setCreatedId(undefined);
+    dirtyRef.current = false;
+  }, [open, event, date, commitSoon]);
 
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!title.trim()) return setError("Give it a title.");
-    if (!day) return setError("Pick a date.");
-    const payload = {
-      title,
-      date: day,
-      time: time || undefined,
-      type,
-      subjectId,
-      notes: notes.trim() || undefined,
-    };
-    if (event) updateEvent(event.id, payload);
-    else addEvent(payload);
+  /** text-ish edits: save debounced */
+  const edit = (set: (v: string) => void) => (value: string) => {
+    set(value);
+    dirtyRef.current = true;
+    commitSoon.run();
+  };
+  const close = () => {
+    if (dirtyRef.current) {
+      commitSoon.cancel();
+      dirtyRef.current = false;
+      commit(true);
+    }
     onClose();
   };
 
   return (
-    <Modal open={open} onClose={onClose} title={event ? "Edit entry" : "New entry"}>
-      <form onSubmit={submit} className="space-y-4">
+    <Modal open={open} onClose={close} title={targetId ? "Edit entry" : "New entry"}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          close();
+        }}
+        className="space-y-4"
+      >
         <div>
           <label className="label" htmlFor="event-title">
             Title
@@ -79,7 +118,7 @@ export default function EventFormModal({
             autoFocus
             placeholder="e.g. Library session, History midterm…"
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => edit(setTitle)(e.target.value)}
           />
         </div>
 
@@ -93,7 +132,7 @@ export default function EventFormModal({
               type="date"
               className="field font-mono"
               value={day}
-              onChange={(e) => setDay(e.target.value)}
+              onChange={(e) => edit(setDay)(e.target.value)}
             />
           </div>
           <div>
@@ -105,7 +144,7 @@ export default function EventFormModal({
               type="time"
               className="field font-mono"
               value={time}
-              onChange={(e) => setTime(e.target.value)}
+              onChange={(e) => edit(setTime)(e.target.value)}
             />
           </div>
         </div>
@@ -117,7 +156,11 @@ export default function EventFormModal({
               <button
                 key={t.value}
                 type="button"
-                onClick={() => setType(t.value)}
+                onClick={() => {
+                  setType(t.value);
+                  dirtyRef.current = true;
+                  commit();
+                }}
                 className={
                   "cursor-pointer rounded-lg border px-3 py-2 text-xs font-medium transition-colors " +
                   (type === t.value
@@ -131,7 +174,14 @@ export default function EventFormModal({
           </div>
         </div>
 
-        <SubjectSelect value={subjectId} onChange={setSubjectId} />
+        <SubjectSelect
+          value={subjectId}
+          onChange={(v) => {
+            setSubjectId(v);
+            dirtyRef.current = true;
+            commit();
+          }}
+        />
 
         <div>
           <label className="label" htmlFor="event-notes">
@@ -142,35 +192,28 @@ export default function EventFormModal({
             className="field min-h-16 resize-y"
             placeholder="Room, materials to bring…"
             value={notes}
-            onChange={(e) => setNotes(e.target.value)}
+            onChange={(e) => edit(setNotes)(e.target.value)}
           />
         </div>
 
-        {error && <p className="text-sm text-marker">{error}</p>}
-
-        <div className="flex justify-between gap-2 pt-1">
-          {event ? (
+        <div className="flex items-center justify-between gap-2 pt-1">
+          {targetId ? (
             <button
               type="button"
               className="btn-ghost text-marker hover:border-marker/40"
               onClick={() => {
-                removeEvent(event.id);
+                removeEvent(targetId);
                 onClose();
               }}
             >
               <Trash2 className="size-4" /> Delete
             </button>
           ) : (
-            <span />
+            <span className="text-xs text-ink-soft">Saves automatically</span>
           )}
-          <div className="flex gap-2">
-            <button type="button" className="btn-ghost" onClick={onClose}>
-              Cancel
-            </button>
-            <button type="submit" className="btn-primary">
-              {event ? "Save changes" : "Add entry"}
-            </button>
-          </div>
+          <button type="submit" className="btn-primary">
+            Done
+          </button>
         </div>
       </form>
     </Modal>

@@ -30,21 +30,20 @@ class EventsStore extends PersistedStore {
         .toList();
   }
 
-  void addEvent(EventInput input) {
-    _events = [
-      ..._events,
-      StudyEvent(
-        id: uid(),
-        title: input.title.trim(),
-        date: input.date,
-        time: input.time,
-        type: input.type,
-        subjectId: input.subjectId,
-        notes: input.notes,
-      ),
-    ];
+  String addEvent(EventInput input) {
+    final event = StudyEvent(
+      id: uid(),
+      title: input.title.trim(),
+      date: input.date,
+      time: input.time,
+      type: input.type,
+      subjectId: input.subjectId,
+      notes: input.notes,
+    );
+    _events = [..._events, event];
     notifyListeners();
     persist();
+    return event.id;
   }
 
   void updateEvent(String id, StudyEvent patch, {bool clearTime = false, bool clearNotes = false, bool clearSubject = false}) {

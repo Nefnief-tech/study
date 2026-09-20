@@ -29,22 +29,21 @@ class HomeworkStore extends PersistedStore {
         .toList();
   }
 
-  void addHomework(HomeworkInput input) {
-    _homeworks = [
-      Homework(
-        id: uid(),
-        title: input.title.trim(),
-        subjectId: input.subjectId,
-        due: input.due,
-        priority: input.priority,
-        notes: input.notes,
-        done: false,
-        createdAt: DateTime.now().millisecondsSinceEpoch,
-      ),
-      ..._homeworks,
-    ];
+  String addHomework(HomeworkInput input) {
+    final homework = Homework(
+      id: uid(),
+      title: input.title.trim(),
+      subjectId: input.subjectId,
+      due: input.due,
+      priority: input.priority,
+      notes: input.notes,
+      done: false,
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    _homeworks = [homework, ..._homeworks];
     notifyListeners();
     persist();
+    return homework.id;
   }
 
   void updateHomework(String id, Homework patch, {bool clearNotes = false, bool clearDue = false, bool clearSubject = false}) {

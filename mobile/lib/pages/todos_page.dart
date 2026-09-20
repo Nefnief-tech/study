@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../models/types.dart';
@@ -313,44 +315,80 @@ class _TodoFormSheetState extends State<TodoFormSheet> {
   late Priority _priority = widget.todo?.priority ?? Priority.medium;
   late String? _due = widget.todo?.due;
   late String? _subjectId = widget.todo?.subjectId;
-  String _error = '';
+  // auto-save: text edits commit debounced, discrete picks immediately —
+  // the sheet can be dismissed at any moment without losing input
+  Timer? _debounce;
+  bool _dirty = false;
+  String? _createdId;
+
+  String? get _targetId => widget.todo?.id ?? _createdId;
 
   @override
   void dispose() {
+    _debounce?.cancel();
+    if (_dirty) _commit(relaxed: true);
     _title.dispose();
     _notes.dispose();
     super.dispose();
   }
 
-  void _submit() {
+  void _commitSoon() {
+    _dirty = true;
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 400), _commit);
+  }
+
+  void _commitNow() {
+    _dirty = true;
+    _debounce?.cancel();
+    _commit();
+  }
+
+  /// writes the form into the store; the close-time flush (`relaxed`) falls
+  /// back to "Untitled" when content exists but no title was typed
+  void _commit({bool relaxed = false}) {
     final title = _title.text.trim();
-    if (title.isEmpty) {
-      setState(() => _error = 'Give the task a title.');
-      return;
-    }
+    final notes = _notes.text.trim();
+    final isCreate = widget.todo == null && _createdId == null;
+    final hasExtras = notes.isNotEmpty || _due != null || _subjectId != null;
+    final t = title.isEmpty && relaxed && isCreate && hasExtras ? 'Untitled' : title;
+    if (t.isEmpty) return; // nothing to create yet / emptied title keeps its last value
     final stores = Stores.I;
-    if (widget.todo != null) {
+    if (_targetId != null) {
+      Todo? current;
+      for (final x in stores.todos.todos) {
+        if (x.id == _targetId) current = x;
+      }
+      if (current == null) return;
       stores.todos.updateTodo(
-        widget.todo!.id,
-        widget.todo!.copyWith(
-          title: title,
-          notes: _notes.text.trim().isEmpty ? null : _notes.text.trim(),
+        current.id,
+        current.copyWith(
+          title: t,
+          notes: notes.isEmpty ? null : notes,
           due: _due,
           priority: _priority,
           subjectId: _subjectId,
         ),
-        clearNotes: _notes.text.trim().isEmpty,
+        clearNotes: notes.isEmpty,
         clearDue: _due == null,
         clearSubject: _subjectId == null,
       );
     } else {
-      stores.todos.addTodo(TodoInput(
-        title,
-        notes: _notes.text.trim().isEmpty ? null : _notes.text.trim(),
+      _createdId = stores.todos.addTodo(TodoInput(
+        t,
+        notes: notes.isEmpty ? null : notes,
         due: _due,
         priority: _priority,
         subjectId: _subjectId,
       ));
+    }
+  }
+
+  void _flushAndClose() {
+    _debounce?.cancel();
+    if (_dirty) {
+      _dirty = false;
+      _commit(relaxed: true);
     }
     Navigator.of(context).pop();
   }
@@ -365,6 +403,7 @@ class _TodoFormSheetState extends State<TodoFormSheet> {
         TextField(
           controller: _title,
           autofocus: widget.todo == null,
+          onChanged: (_) => _commitSoon(),
           decoration: const InputDecoration(hintText: 'e.g. Linear algebra problem set 4'),
         ),
         const SizedBox(height: 14),
@@ -372,7 +411,10 @@ class _TodoFormSheetState extends State<TodoFormSheet> {
         InkWell(
           onTap: () async {
             final picked = await pickDueDateTime(context, _due);
-            if (picked != null) setState(() => _due = picked);
+            if (picked != null) {
+              setState(() => _due = picked);
+              _commitNow();
+            }
           },
           borderRadius: BorderRadius.circular(10),
           child: Container(
@@ -398,7 +440,10 @@ class _TodoFormSheetState extends State<TodoFormSheet> {
                   SemIconButton(
                     icon: Icons.close,
                     size: 14,
-                    onPressed: () => setState(() => _due = null),
+                    onPressed: () {
+                      setState(() => _due = null);
+                      _commitNow();
+                    },
                   ),
               ],
             ),
@@ -417,29 +462,35 @@ class _TodoFormSheetState extends State<TodoFormSheet> {
           ],
         ),
         const SizedBox(height: 14),
-        SubjectSelect(value: _subjectId, onChanged: (v) => setState(() => _subjectId = v)),
+        SubjectSelect(
+          value: _subjectId,
+          onChanged: (v) {
+            setState(() => _subjectId = v);
+            _commitNow();
+          },
+        ),
         const SizedBox(height: 14),
         const SemLabel('Notes (optional)'),
         TextField(
           controller: _notes,
           minLines: 2,
           maxLines: 5,
+          onChanged: (_) => _commitSoon(),
           decoration: const InputDecoration(hintText: 'Chapters, page numbers, links…'),
         ),
-        if (_error.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          Text(_error, style: TextStyle(color: sem.marker, fontSize: 13)),
-        ],
         const SizedBox(height: 18),
         Row(
-          mainAxisAlignment: MainAxisAlignment.end,
           children: [
-            SemGhostButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
+            Expanded(
+              child: Text(
+                'Saves automatically',
+                style: Theme.of(context)
+                    .textTheme
+                    .labelSmall!
+                    .copyWith(color: sem.inkSoft),
+              ),
             ),
-            const SizedBox(width: 8),
-            SemPrimaryButton(onPressed: _submit, child: Text(widget.todo == null ? 'Add task' : 'Save changes')),
+            SemPrimaryButton(onPressed: _flushAndClose, child: const Text('Done')),
           ],
         ),
       ],
@@ -450,7 +501,10 @@ class _TodoFormSheetState extends State<TodoFormSheet> {
     final sem = context.sem;
     final selected = _priority == p;
     return InkWell(
-      onTap: () => setState(() => _priority = p),
+      onTap: () {
+        setState(() => _priority = p);
+        _commitNow();
+      },
       borderRadius: BorderRadius.circular(10),
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 9),
