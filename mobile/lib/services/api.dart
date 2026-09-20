@@ -297,12 +297,17 @@ class ChatError extends ChatUpdate {
 }
 
 /// best-effort raw-file upload to the Appwrite storage bucket; returns the
-/// bucket file id so the extracted text and the raw file can be linked
+/// bucket file id so the extracted text and the raw file can be linked.
+/// File security is on — every file is locked to its owner.
 Future<String?> uploadToBucket(String filePath) async {
+  final ownerId = Stores.I.auth.user?.id;
   final result = await storage.createFile(
     bucketId: kStorageBucketId,
     fileId: ID.unique(),
     file: InputFile.fromPath(path: filePath),
+    permissions: ownerId == null
+        ? null
+        : ['read("user:$ownerId")', 'write("user:$ownerId")'],
   );
   return result.$id;
 }

@@ -57,13 +57,14 @@ export default function DocumentsPanel() {
       // 1. persist the raw file in the Appwrite storage bucket (best-effort —
       //    extraction keeps working locally if the bucket isn't provisioned)
       let bucketFileId: string | undefined;
-      if (appwriteClient) {
+      const ownerId = useAuthStore.getState().user?.id;
+      if (appwriteClient && ownerId) {
         try {
-          const res = await new Storage(appwriteClient).createFile(
-            STORAGE_BUCKET_ID,
-            ID.unique(),
-            file,
-          );
+          // file security is on — every file is locked to its owner
+          const res = await new Storage(appwriteClient).createFile(STORAGE_BUCKET_ID, ID.unique(), file, [
+            `read("user:${ownerId}")`,
+            `write("user:${ownerId}")`,
+          ]);
           bucketFileId = res.$id;
         } catch {
           setBucketWarn(true);
