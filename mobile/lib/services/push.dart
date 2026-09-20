@@ -64,9 +64,11 @@ class PushService {
   static bool available = false;
   static bool registered = false;
   static String? _token;
-  /// deterministic per-install Appwrite push-target id, so re-registering
-  /// replaces this device's target instead of piling up duplicates
+  /// Appwrite push-target id of the currently signed-in user on this device —
+  /// derived per install AND per user, so account switches never collide with
+  /// a target owned by a different user (target ids are globally unique)
   static String? _targetId;
+  static String? _targetUserId;
 
   static Future<void> init() async {
     try {
@@ -123,19 +125,28 @@ class PushService {
     await _syncTarget();
   }
 
-  /// stable per-install target id derived from an install random value
-  static Future<String> _ensureTargetId() async {
-    if (_targetId != null) return _targetId!;
+  /// stable per-user, per-install target id: same user + same install keeps
+  /// one target (re-registration refreshes it), a different account on this
+  /// device gets its own — no 409s against targets owned by someone else
+  static Future<String> _ensureTargetId(String userId) async {
+    if (_targetId != null && _targetUserId == userId) return _targetId!;
     final prefs = await SharedPreferences.getInstance();
-    var seed = prefs.getString('semester.pushtargetseed');
-    if (seed == null) {
-      seed = DateTime.now().microsecondsSinceEpoch.toString() +
-          _token.hashCode.toString();
-      await prefs.setString('semester.pushtargetseed', seed);
+    final key = 'semester.pushtarget.$userId';
+    var id = prefs.getString(key);
+    if (id == null) {
+      var seed = prefs.getString('semester.pushtargetseed');
+      if (seed == null) {
+        seed = DateTime.now().microsecondsSinceEpoch.toString() +
+            _token.hashCode.toString();
+        await prefs.setString('semester.pushtargetseed', seed);
+      }
+      final digest = sha256.convert(utf8.encode('pushtarget:$seed:$userId'));
+      id = digest.toString().substring(0, 32);
+      await prefs.setString(key, id);
     }
-    final digest = sha256.convert(utf8.encode('pushtarget:$seed'));
-    _targetId = digest.toString().substring(0, 32);
-    return _targetId!;
+    _targetId = id;
+    _targetUserId = userId;
+    return id;
   }
 
   /// registers (or refreshes) the signed-in user's Appwrite push target.
@@ -143,10 +154,18 @@ class PushService {
   static Future<void> _syncTarget() async {
     final auth = Stores.I.auth;
     final token = _token;
-    if (!available || auth.status != SyncStatus.signedIn || token == null) return;
+    final userId = auth.user?.id;
+    if (!available ||
+        auth.status != SyncStatus.signedIn ||
+        token == null ||
+        userId == null ||
+        userId.isEmpty) {
+      return;
+    }
     try {
-      final targetId = await _ensureTargetId();
+      final targetId = await _ensureTargetId(userId);
       try {
+        // refresh: drop this user's stale target (old FCM token) first
         await account.deletePushTarget(targetId: targetId);
       } catch (_) {
         // no target yet — fine
