@@ -84,9 +84,22 @@ const res = await handler({
   log: console.log,
   error: console.error,
 });
-console.log("\n=== RESULT ===");
+console.log("\n=== AFTERNOON RUN (default now) ===");
 console.log(JSON.stringify(res.body, null, 2));
-console.log("\n=== PUSHES ===");
+
+// morning run: virtual "now" = tomorrow ~04:00 UTC → slot=morning, today=tomorrow
+process.env.DIGEST_NOW = `${tKey}T04:00:00.000Z`;
+sent.length = 0;
+const res2 = await handler({
+  req: {},
+  res: { json: (body, status) => ({ body, status }) },
+  log: console.log,
+  error: console.error,
+});
+console.log("\n=== MORNING RUN (DIGEST_NOW =", process.env.DIGEST_NOW, ") ===");
+console.log(JSON.stringify(res2.body, null, 2));
+
+console.log("\n=== PUSHES (morning run) ===");
 for (const p of sent) {
   console.log(`\n[${p.title}]\n${p.body}\n(users: ${p.users.join(",")}, id: ${p.messageId})`);
 }

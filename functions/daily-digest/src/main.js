@@ -1,25 +1,26 @@
 import { createHash } from "node:crypto";
 
 /**
- * Semester — daily digest (Appwrite Function, scheduled daily).
+ * Semester — daily digest (Appwrite Function, scheduled twice per day).
  *
- * For every user that has synced data it sends up to three push notifications
- * via Appwrite Messaging:
+ * Schedule: "20 7,15 * * * Europe/Vienna" — 07:20 (morning) and 15:20
+ * (afternoon) Austria time. The function derives the slot from the fire time
+ * (UTC hour < 10 → morning) and sends ONE consolidated push per user:
  *
- *   1. "Classes tomorrow"  — the timetable for the next day, with
- *      CANCELLED / substituted lessons taken from the mirrored Eltern-portal
- *      substitute plan (the apps mirror the *plan only* — credentials never
- *      leave the device).
- *   2. "Due soon"          — open todos & homework that are overdue or due
- *      tomorrow.
- *   3. "This week"         — exams, deadlines & events within the next 7 days.
+ *   morning   — today's timetable (with live substitutions), what's due
+ *               today/overdue, and events of the coming week
+ *   afternoon — tomorrow's timetable, what's due tomorrow/overdue, and the
+ *               next 7 days of events
  *
  * Everything is read as STRUCTURED ROWS from the `semester` tables (one row
  * per entity, `deleted` tombstones): subjects · todos · homeworks · events ·
  * timetable_entries · portal_entries · portal_courses.
  *
- * Empty digests are skipped; each message id is deterministic per day, so
- * re-runs on the same day never double-send.
+ * Empty digests are skipped; the message id is deterministic per user/slot/
+ * day, so re-runs on the same day never double-send.
+ *
+ * DIGEST_NOW (ISO date, optional, test hook): overrides "now" — used by the
+ * mock harness to simulate morning/evening runs. Never set in production.
  *
  * Required function scopes (appwrite.config.json → functions[].scopes):
  *   documents.read  — read table rows
@@ -113,11 +114,9 @@ async function usersWithData() {
   return [...userIds];
 }
 
-async function sendPush(userId, kind, title, body) {
-  const now = new Date();
-  const day = ymd(now).replaceAll("-", "");
-  const hash = createHash("sha256").update(`${userId}:${kind}:${day}`).digest("hex").slice(0, 8);
-  const messageId = `dgt-${kind}-${day}-${hash}`.slice(0, 36);
+async function sendPush(userId, slot, ymd, title, body) {
+  const hash = createHash("sha256").update(`${userId}:${slot}:${ymd}`).digest("hex").slice(0, 8);
+  const messageId = `dgt-${slot}-${ymd}-${hash}`.slice(0, 36);
   try {
     await aw("/messaging/messages/push", {
       method: "POST",
@@ -131,7 +130,7 @@ async function sendPush(userId, kind, title, body) {
     });
     return "sent";
   } catch (e) {
-    if (e.status === 409) return "already-sent"; // deterministic id → re-run same day
+    if (e.status === 409) return "already-sent"; // deterministic id → re-run same slot
     throw e;
   }
 }
@@ -146,32 +145,36 @@ function ymd(d) {
 
 /** "18.09.2026" (Eltern-portal format) → "2026-09-18" or null */
 function parseDeDate(s) {
-  const m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(String(s ?? "").trim());
+  const m = String(s ?? "").trim().match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
   return m ? `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}` : null;
 }
 
-function addDays(n) {
-  const d = new Date();
+function addDays(now, n) {
+  const d = new Date(now);
   d.setDate(d.getDate() + n);
   return d;
 }
 
+/** morning run (fired ~07:20 local) or afternoon run (~15:20 local) */
+function slotOf(now) {
+  return now.getUTCHours() < 10 ? "morning" : "afternoon";
+}
+
 /* ------------------------------------------------------------------ */
-/* digest builders — each returns {title, body} or null (→ not sent)   */
+/* digest builders                                                     */
 /* ------------------------------------------------------------------ */
 
-function classesTomorrow(entries, subs, courses) {
+/** lessons of `targetDay` (offset from now) with mirrored substitutions */
+function classesFor(entries, subs, courses, targetDay) {
   if (entries.length === 0) return null;
 
-  const t = addDays(1);
-  const tKey = ymd(t);
-  const day = JS_DAY[t.getDay()];
+  const tKey = ymd(targetDay);
+  const day = JS_DAY[targetDay.getDay()];
 
   const lessons = entries.filter((e) => e.day === day);
   if (lessons.length === 0) return null; // weekend / free day
 
-  // mirrored substitute plan for tomorrow
-  const tomorrowSubs = subs.filter((s) => parseDeDate(s.date) === tKey);
+  const daySubs = subs.filter((s) => parseDeDate(s.date) === tKey);
   const courseCodes = courses.map((c) => String(c).trim());
 
   const periods = [...new Set(lessons.map((e) => e.period))].sort((a, b) => a - b);
@@ -181,7 +184,7 @@ function classesTomorrow(entries, subs, courses) {
 
   for (const p of periods) {
     for (const e of lessons.filter((x) => x.period === p)) {
-      const cellSubs = tomorrowSubs.filter(
+      const cellSubs = daySubs.filter(
         (s) =>
           parseInt(s.period, 10) === p &&
           courseCodes.includes(String(s.course).trim()) &&
@@ -204,25 +207,22 @@ function classesTomorrow(entries, subs, courses) {
     }
   }
 
-  const weekday = DAYS.indexOf(day) >= 0 ? day : "";
   return {
-    title: `Tomorrow${weekday ? ` (${weekday})` : ""} · ${lessons.length} lessons${cancelled ? ` · ${cancelled} cancelled` : ""}`,
-    body:
-      lines.join("\n") +
-      (subs.length
-        ? ""
-        : "\n\n(no Vertretungsplan mirrored — open the Timetable page once while signed in to include cancellations)"),
-    meta: { cancelled, substituted },
+    weekday: DAYS.indexOf(day) >= 0 ? day : "",
+    lessonCount: lessons.length,
+    cancelled,
+    substituted,
+    lines,
   };
 }
 
-function dueSoon(todos, homework, subjects) {
+/** open todos & homework that are overdue or due within the next 2 days */
+function dueSoon(now, todos, homework, subjects) {
   const subjectName = (id) => subjects.find((s) => s.id === id)?.name ?? null;
 
   const windows = [];
-  const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 21); // catch long-overdue
-  const end = addDays(2);
+  const end = addDays(now, 2);
   end.setHours(23, 59, 59, 999);
 
   const collect = (list, kind) => {
@@ -231,7 +231,7 @@ function dueSoon(todos, homework, subjects) {
       const d = new Date(item.due);
       if (Number.isNaN(d.getTime()) || d < start || d > end) continue;
       const overdue = d < now;
-      const isTomorrow = ymd(d) === ymd(addDays(1));
+      const isTomorrow = ymd(d) === ymd(addDays(now, 1));
       const isToday = ymd(d) === ymd(now);
       const hhmm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
       const hasTime = String(item.due).includes("T");
@@ -258,17 +258,19 @@ function dueSoon(todos, homework, subjects) {
 
   const overdue = windows.filter((w) => w.overdue).length;
   return {
-    title: `Due soon · ${windows.length} open${overdue ? ` · ${overdue} overdue` : ""}`,
-    body: windows.slice(0, 12).map((w) => w.line).join("\n"),
+    count: windows.length,
+    overdue,
+    lines: windows.slice(0, 4).map((w) => w.line),
   };
 }
 
-function weekAhead(events, subjects) {
+/** exams, deadlines & events within the next 7 days (from `fromOffset`) */
+function weekAhead(now, events, subjects, fromOffset) {
   const list = events;
   if (list.length === 0) return null;
 
-  const from = ymd(addDays(1));
-  const until = ymd(addDays(7));
+  const from = ymd(addDays(now, fromOffset));
+  const until = ymd(addDays(now, fromOffset + 7));
   const wd = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const typeLabel = { exam: "Exam", deadline: "Deadline", study: "Study", event: "Event" };
 
@@ -286,7 +288,7 @@ function weekAhead(events, subjects) {
   }
   if (rows.length === 0) return null;
   rows.sort((a, b) => a.sort - b.sort);
-  return { title: "Next 7 days", body: rows.slice(0, 12).map((r) => r.line).join("\n") };
+  return { lines: rows.slice(0, 3).map((r) => r.line) };
 }
 
 /* ------------------------------------------------------------------ */
@@ -299,6 +301,11 @@ export default async ({ req, res, log, error }) => {
     error(`Missing APPWRITE_API_KEY. Available env keys: ${names.join(", ") || "(none)"}`);
     return res.json({ ok: false, error: "not_configured", envKeys: names }, 500);
   }
+
+  const now = process.env.DIGEST_NOW ? new Date(process.env.DIGEST_NOW) : new Date();
+  const slot = slotOf(now); // morning → today's plan, afternoon → tomorrow's
+  const dayOffset = slot === "morning" ? 0 : 1;
+  const dayWord = slot === "morning" ? "Today" : "Tomorrow";
 
   let userIds;
   try {
@@ -332,23 +339,45 @@ export default async ({ req, res, log, error }) => {
       const subs = alive(subRows);
       const courses = alive(courseRows).map((r) => r.course);
 
-      const messages = [
-        ["classes", classesTomorrow(entries, subs, courses)],
-        ["tasks", dueSoon(todos, homework, subjects)],
-        ["week", weekAhead(events, subjects)],
-      ].filter(([, m]) => m !== null);
+      const classes = classesFor(entries, subs, courses, addDays(now, dayOffset));
+      const due = dueSoon(now, todos, homework, subjects);
+      const week = weekAhead(now, events, subjects, dayOffset);
 
-      const sent = [];
-      for (const [kind, m] of messages) {
-        sent.push([kind, await sendPush(userId, kind, m.title, m.body)]);
+      if (!classes && !due && !week) {
+        log(`${userId.slice(0, 8)}… ${slot}: nothing to send`);
+        results.push({ userId, slot, sent: "nothing" });
+        continue;
       }
-      log(`${userId.slice(0, 8)}… → ${sent.map(([k, s]) => `${k}:${s}`).join(", ") || "nothing to send"}`);
-      results.push({ userId, sent });
+
+      /* one consolidated push */
+      const bodyParts = [];
+      const titleParts = [];
+      if (classes) {
+        titleParts.push(`${classes.lessonCount} lesson${classes.lessonCount === 1 ? "" : "s"}${classes.cancelled ? ` · ${classes.cancelled} cancelled` : ""}`);
+        bodyParts.push(...classes.lines.slice(0, 7));
+        if (classes.lines.length > 7) bodyParts.push(`… +${classes.lines.length - 7} more lessons`);
+        if (subs.length === 0) {
+          bodyParts.push("(no Vertretungsplan mirrored — open the Timetable page once to include substitutions)");
+        }
+      }
+      if (due) {
+        titleParts.push(`${due.count} due${due.overdue ? ` · ${due.overdue} overdue` : ""}`);
+        bodyParts.push("", ...due.lines);
+      }
+      if (week) {
+        bodyParts.push("", ...week.lines);
+      }
+      const weekday = classes?.weekday ? ` (${classes.weekday})` : "";
+      const title = `${dayWord}${weekday}: ${titleParts.join(" · ")}`;
+
+      const status = await sendPush(userId, slot, ymd(now), title, bodyParts.join("\n"));
+      log(`${userId.slice(0, 8)}… ${slot} → ${status}: ${title}`);
+      results.push({ userId, slot, sent: status, title });
     } catch (e) {
       error(`user ${userId}: ${e.message}`);
       results.push({ userId, error: e.message });
     }
   }
 
-  return res.json({ ok: true, users: results.length, results });
+  return res.json({ ok: true, slot, users: results.length, results });
 };
