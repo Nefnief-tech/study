@@ -63,6 +63,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               ? `synced · ${formatClock(auth.lastSyncedAt)}`
               : "not synced yet";
 
+  // the marketing landing renders full-bleed — no sidebar, no top bar
+  if (pathname === "/landing") return <>{children}</>;
+
   return (
     <div className="min-h-dvh">
       {/* desktop sidebar */}
