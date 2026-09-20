@@ -30,13 +30,19 @@ export interface AuthUser {
   id: string;
   email: string;
   name: string;
+  emailVerified: boolean;
 }
 
 export async function getCurrentUser(): Promise<AuthUser | null> {
   if (!account) return null;
   try {
     const user = await account.get();
-    return { id: user.$id, email: user.email, name: user.name || user.email };
+    return {
+      id: user.$id,
+      email: user.email,
+      name: user.name || user.email,
+      emailVerified: user.emailVerification,
+    };
   } catch {
     return null;
   }

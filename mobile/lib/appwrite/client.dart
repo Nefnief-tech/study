@@ -40,6 +40,7 @@ Future<AuthUser> getCurrentUserStrict() async {
     user.$id,
     user.email,
     user.name.isNotEmpty ? user.name : user.email,
+    emailVerified: user.emailVerification,
   );
 }
 

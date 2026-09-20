@@ -842,6 +842,41 @@ Future<void> signUp(String name, String email, String password) async {
     name: name,
   );
   await signIn(email, password);
+  // the session is fresh — send the verification mail right away; SMTP
+  // misconfig or rate limits must never fail the signup itself
+  try {
+    await sendVerificationEmail();
+  } catch (_) {}
+}
+
+/* ---------------- email verification + password recovery ----------------
+ * Sending a verification needs the signed-in session; confirming is a public
+ * endpoint and recovery create/complete are guest-callable. The emails point
+ * at the Semester web app (/verify, /recover) — the link completes there, on
+ * any device, so no deep-link setup is required in the app itself. */
+
+String get _webAppBase {
+  final base = Stores.I.settings.serverUrl.trim();
+  return base.endsWith('/') ? base.substring(0, base.length - 1) : base;
+}
+
+/// sends the verification mail for the signed-in account
+Future<void> sendVerificationEmail() async {
+  await account.createEmailVerification(url: '$_webAppBase/verify');
+}
+
+/// sends the password-reset mail (works while signed out)
+Future<void> requestPasswordRecovery(String email) async {
+  await account.createRecovery(email: email, url: '$_webAppBase/recover');
+}
+
+/// re-fetches the profile — refreshes the verified badge after the user
+/// confirmed the link (possibly in another browser)
+Future<void> refreshUser() async {
+  final auth = Stores.I.auth;
+  if (auth.status != SyncStatus.signedIn) return;
+  final user = await getCurrentUser();
+  if (user != null) auth.setAuth(user, SyncStatus.signedIn);
 }
 
 /// signs out; local data deliberately stays on the device

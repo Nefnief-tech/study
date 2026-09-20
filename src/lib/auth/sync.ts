@@ -768,6 +768,74 @@ function subscribeStores() {
   }
 }
 
+/* ================================================================== */
+/* EMAIL VERIFICATION + PASSWORD RECOVERY                              */
+/* ================================================================== */
+
+/* Appwrite scopes (server source): creating a recovery is guest-callable and
+ * confirming a verification is `scope: public` — email links must work from a
+ * logged-out inbox. Sending a verification requires the signed-in session.
+ *
+ * Email links redirect into this web app (`/verify`, `/recover`) with
+ * `userId` + `secret` query params — the two pages below consume them. The
+ * redirect host must be one of the project's registered platform hostnames,
+ * which `window.location.origin` satisfies wherever the site is deployed. */
+
+/** re-fetch the profile — updates the verified badge after a confirm */
+export async function refreshUser() {
+  const { status } = useAuthStore.getState();
+  if (status !== "signed-in") return;
+  const user = await getCurrentUser();
+  if (user) useAuthStore.getState().setAuth(user, "signed-in");
+}
+
+/** sends the verification mail for the signed-in account */
+export async function sendVerificationEmail() {
+  if (!account) throw new Error("Auth is not configured");
+  await account.createVerification(`${window.location.origin}/verify`);
+}
+
+/** completes the verification from an email link — public endpoint, no session needed */
+export async function confirmVerification(userId: string, secret: string) {
+  if (!account) throw new Error("Auth is not configured");
+  await account.updateVerification(userId, secret);
+}
+
+/** sends the password-reset mail (works while signed out) */
+export async function requestPasswordRecovery(email: string) {
+  if (!account) throw new Error("Auth is not configured");
+  await account.createRecovery(email, `${window.location.origin}/recover`);
+}
+
+/** completes the reset from an email link — also flips the account to verified */
+export async function completePasswordRecovery(
+  userId: string,
+  secret: string,
+  password: string,
+) {
+  if (!account) throw new Error("Auth is not configured");
+  await account.updateRecovery(userId, secret, password);
+}
+
+/** human-readable text for the failure modes these flows can hit */
+export function friendlyAuthFlowError(err: unknown): string {
+  const raw = `${(err as Error)?.message ?? err}`;
+  if (/already/i.test(raw)) return "This email is already verified — just sign in.";
+  if (/invalid_token|expired|invalid/i.test(raw))
+    return "This link is invalid or has expired. Request a new one.";
+  if (/rate/i.test(raw))
+    return "Too many emails requested — wait a minute and try again.";
+  if (/smtp/i.test(raw))
+    return "The mail server isn't configured for this project yet.";
+  if (/origin|platform|url/i.test(raw))
+    return "This address isn't allowed as a mail redirect — is this host registered in the Appwrite project?";
+  return raw.slice(0, 160) || "Something went wrong.";
+}
+
+/* ================================================================== */
+/* SESSION PERSISTENCE                                                 */
+/* ================================================================== */
+
 /* ---------------- session persistence ----------------
  * The Dart/JS SDKs keep sessions alive in the browser, but the mobile cookie
  * jar is memory-only — so the secret is persisted device-local at sign-in and
@@ -866,6 +934,9 @@ export async function signUp(name: string, email: string, password: string) {
   if (!account) throw new Error("Auth is not configured");
   await account.create(ID.unique(), email, password, name);
   await signIn(email, password);
+  // the session is fresh — send the verification mail right away; SMTP
+  // misconfig or rate limits must never fail the signup itself
+  await sendVerificationEmail().catch(() => {});
 }
 
 /** signs out; local data deliberately stays on the device */

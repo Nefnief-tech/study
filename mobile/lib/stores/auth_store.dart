@@ -6,7 +6,8 @@ class AuthUser {
   final String id;
   final String email;
   final String name;
-  const AuthUser(this.id, this.email, this.name);
+  final bool emailVerified;
+  const AuthUser(this.id, this.email, this.name, {this.emailVerified = false});
 }
 
 enum SyncStatus { unconfigured, loading, signedOut, signedIn }

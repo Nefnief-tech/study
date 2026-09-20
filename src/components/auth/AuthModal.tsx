@@ -1,9 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CloudOff, LogOut, RefreshCcw, UserRound } from "lucide-react";
+import Link from "next/link";
+import { BadgeCheck, CircleAlert, CloudOff, LogOut, MailCheck, RefreshCcw, UserRound } from "lucide-react";
 import { useAuthStore } from "@/lib/store/auth";
-import { signIn, signOut, signUp, syncNow } from "@/lib/auth/sync";
+import {
+  friendlyAuthFlowError,
+  refreshUser,
+  sendVerificationEmail,
+  signIn,
+  signOut,
+  signUp,
+  syncNow,
+} from "@/lib/auth/sync";
 import Modal from "@/components/ui/Modal";
 import { cn, formatClock } from "@/lib/utils";
 
@@ -26,13 +35,32 @@ export default function AuthModal({
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [verifyState, setVerifyState] = useState<"idle" | "busy" | "sent">("idle");
+  const [verifyError, setVerifyError] = useState("");
 
   useEffect(() => {
     if (open) {
       setError("");
       setBusy(false);
+      setVerifyState("idle");
+      setVerifyError("");
+      // re-read the profile so a verification completed in another tab
+      // (or from the email itself) shows up in the badge
+      void refreshUser();
     }
   }, [open]);
+
+  const sendVerification = async () => {
+    setVerifyError("");
+    setVerifyState("busy");
+    try {
+      await sendVerificationEmail();
+      setVerifyState("sent");
+    } catch (err) {
+      setVerifyState("idle");
+      setVerifyError(friendlyAuthFlowError(err));
+    }
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,7 +93,31 @@ export default function AuthModal({
               <p className="truncate text-sm font-medium">{user.name}</p>
               <p className="truncate font-mono text-[10px] text-ink-soft">{user.email}</p>
             </div>
+            {user.emailVerified ? (
+              <span className="chip ml-auto shrink-0 text-accent" title="Email verified">
+                <BadgeCheck className="size-3" /> verified
+              </span>
+            ) : (
+              <span className="chip ml-auto shrink-0 text-amber" title="Email not verified yet">
+                <CircleAlert className="size-3" /> unverified
+              </span>
+            )}
           </div>
+
+          {!user.emailVerified && (
+            <div className="space-y-2">
+              <button className="btn-ghost w-full" onClick={() => void sendVerification()} disabled={verifyState === "busy"}>
+                <MailCheck className="size-4" />
+                {verifyState === "busy" ? "sending…" : "Send verification email"}
+              </button>
+              {verifyState === "sent" && (
+                <p className="font-mono text-[10px] text-accent">
+                  sent — follow the link in your inbox (valid 7 days)
+                </p>
+              )}
+              {verifyError && <p className="text-sm text-marker">{verifyError}</p>}
+            </div>
+          )}
 
           <p className="font-mono text-[11px] text-ink-soft">
             {syncing
@@ -168,6 +220,17 @@ export default function AuthModal({
             />
             {mode === "register" && (
               <p className="mt-1 font-mono text-[10px] text-ink-soft">at least 8 characters</p>
+            )}
+            {mode === "login" && (
+              <p className="mt-1 font-mono text-[10px]">
+                <Link
+                  href="/recover"
+                  onClick={onClose}
+                  className="text-ink-soft underline decoration-line underline-offset-2 transition-colors hover:text-ink"
+                >
+                  forgot password?
+                </Link>
+              </p>
             )}
           </div>
 

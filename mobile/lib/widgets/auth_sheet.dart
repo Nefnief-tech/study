@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../appwrite/sync.dart';
@@ -9,7 +11,8 @@ import '../utils/utils.dart';
 import 'controls.dart';
 
 /// Port of AuthModal.tsx — sign in / create account / account management,
-/// plus the device-local server URL setting and push status.
+/// plus the device-local server URL setting, push status, email verification
+/// and password recovery.
 class AuthSheet extends StatefulWidget {
   const AuthSheet({super.key});
 
@@ -22,6 +25,13 @@ class AuthSheet extends StatefulWidget {
 
 class _AuthSheetState extends State<AuthSheet> {
   bool _register = false;
+  bool _recovery = false;
+  bool _recoveryBusy = false;
+  bool _recoverySent = false;
+  bool _verifyBusy = false;
+  bool _verifySent = false;
+  String _recoveryError = '';
+  String _verifyError = '';
   final _name = TextEditingController();
   final _email = TextEditingController();
   final _password = TextEditingController();
@@ -32,12 +42,50 @@ class _AuthSheetState extends State<AuthSheet> {
   bool _obscure = true;
 
   @override
+  void initState() {
+    super.initState();
+    // a verification confirmed in the phone's browser (or elsewhere) should
+    // show up the moment the sheet opens
+    unawaited(refreshUser());
+  }
+
+  @override
   void dispose() {
     _name.dispose();
     _email.dispose();
     _password.dispose();
     _server.dispose();
     super.dispose();
+  }
+
+  Future<void> _sendVerification() async {
+    setState(() {
+      _verifyError = '';
+      _verifyBusy = true;
+    });
+    try {
+      await sendVerificationEmail();
+      if (mounted) setState(() => _verifySent = true);
+    } catch (e) {
+      if (mounted) setState(() => _verifyError = _friendlyAuthError(e.toString()));
+    } finally {
+      if (mounted) setState(() => _verifyBusy = false);
+    }
+  }
+
+  Future<void> _sendRecovery() async {
+    setState(() {
+      _recoveryError = '';
+      _recoveryBusy = true;
+    });
+    try {
+      await requestPasswordRecovery(_email.text.trim());
+      if (mounted) setState(() => _recoverySent = true);
+    } catch (e) {
+      if (mounted) setState(() => _recoveryError = _friendlyAuthError(e.toString()));
+    } finally {
+      if (mounted) setState(() => _recoveryBusy = false);
+    }
   }
 
   Future<void> _submit() async {
@@ -72,6 +120,16 @@ class _AuthSheetState extends State<AuthSheet> {
       return 'An account with this email already exists.';
     }
     if (raw.contains('user_not_found')) return 'No account with this email.';
+    if (raw.contains('already_verified') || raw.contains('already')) {
+      return 'This email is already verified.';
+    }
+    if (raw.contains('invalid_token') || raw.contains('expired')) {
+      return 'This link is invalid or has expired. Request a new one.';
+    }
+    if (raw.contains('rate_limit')) return 'Too many requests — wait a minute and try again.';
+    if (raw.contains('smtp') || raw.contains('mail')) {
+      return 'The mail server isn\'t configured for this project yet.';
+    }
     if (raw.length > 200) return raw.substring(0, 200);
     return raw;
   }
@@ -168,6 +226,56 @@ class _AuthSheetState extends State<AuthSheet> {
                             : 'not synced yet',
                 style: Theme.of(context).textTheme.labelSmall,
               ),
+              if (!Stores.I.auth.user!.emailVerified) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'email · not verified yet',
+                  style: Theme.of(context)
+                      .textTheme
+                      .labelSmall!
+                      .copyWith(color: sem.amber),
+                ),
+                const SizedBox(height: 10),
+                SemGhostButton(
+                  onPressed: _verifyBusy ? null : _sendVerification,
+                  child: _verifyBusy
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.mark_email_read_outlined, size: 16),
+                            SizedBox(width: 6),
+                            Text('Send verification email'),
+                          ],
+                        ),
+                ),
+                if (_verifySent) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'sent — follow the link in your inbox (valid 7 days)',
+                    style: Theme.of(context)
+                        .textTheme
+                        .labelSmall!
+                        .copyWith(color: sem.accent),
+                  ),
+                ],
+                if (_verifyError.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(_verifyError, style: TextStyle(color: sem.marker, fontSize: 13)),
+                ],
+              ] else ...[
+                const SizedBox(height: 4),
+                Text(
+                  'email · verified',
+                  style: Theme.of(context)
+                      .textTheme
+                      .labelSmall!
+                      .copyWith(color: sem.accent),
+                ),
+              ],
               if (PushService.available) ...[
                 const SizedBox(height: 4),
                 Text(
@@ -216,79 +324,163 @@ class _AuthSheetState extends State<AuthSheet> {
             ],
 
             if (!signedInNow && Stores.I.auth.status != SyncStatus.loading) ...[
-              SegToggle<bool>(
-                options: [(false, 'Sign in'), (true, 'Create account')],
-                selected: _register,
-                onChanged: (v) => setState(() {
-                  _register = v;
-                  _error = '';
-                }),
-              ),
-              const SizedBox(height: 14),
-              if (_register) ...[
-                const SemLabel('Name'),
+              if (_recovery) ...[
+                Text(
+                  'Forgot your password?',
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium!
+                      .copyWith(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'We\'ll send a reset link to your email. It opens on any device — '
+                  'the new password is set in the browser.',
+                  style: Theme.of(context).textTheme.labelSmall!.copyWith(height: 1.5),
+                ),
+                const SizedBox(height: 14),
+                const SemLabel('Email'),
                 TextField(
-                  controller: _name,
-                  textInputAction: TextInputAction.next,
-                  decoration: const InputDecoration(hintText: 'Your name'),
+                  controller: _email,
+                  keyboardType: TextInputType.emailAddress,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _sendRecovery(),
+                  decoration: const InputDecoration(hintText: 'you@school.example'),
                 ),
-                const SizedBox(height: 12),
-              ],
-              const SemLabel('Email'),
-              TextField(
-                controller: _email,
-                keyboardType: TextInputType.emailAddress,
-                textInputAction: TextInputAction.next,
-                decoration: const InputDecoration(hintText: 'you@school.example'),
-              ),
-              const SizedBox(height: 12),
-              const SemLabel('Password'),
-              TextField(
-                controller: _password,
-                obscureText: _obscure,
-                textInputAction: TextInputAction.done,
-                onSubmitted: (_) => _submit(),
-                decoration: InputDecoration(
-                  hintText: _register ? 'at least 8 characters' : '',
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined,
-                      size: 18,
-                      color: sem.inkSoft,
-                    ),
-                    onPressed: () => setState(() => _obscure = !_obscure),
-                  ),
-                ),
-              ),
-              if (_error.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Text(_error, style: TextStyle(color: sem.marker, fontSize: 13)),
-              ],
-              const SizedBox(height: 16),
-              SemPrimaryButton(
-                onPressed: _busy ? null : _submit,
-                child: _busy
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2))
-                    : Text(_register ? 'Create account & sign in' : 'Sign in'),
-              ),
-              const SizedBox(height: 10),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.cloud_off_outlined, size: 12, color: sem.inkSoft),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      'Authenticated by your Appwrite project — the password never touches the '
-                      'Semester server. Sessions are managed by the Appwrite SDK.',
-                      style: Theme.of(context).textTheme.labelSmall!.copyWith(height: 1.5),
-                    ),
+                if (_recoverySent) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'recovery email sent — valid for 1 hour',
+                    style: Theme.of(context)
+                        .textTheme
+                        .labelSmall!
+                        .copyWith(color: sem.accent),
                   ),
                 ],
-              ),
+                if (_recoveryError.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(_recoveryError, style: TextStyle(color: sem.marker, fontSize: 13)),
+                ],
+                const SizedBox(height: 16),
+                SemPrimaryButton(
+                  onPressed: _recoveryBusy ? null : _sendRecovery,
+                  child: _recoveryBusy
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Text('Send recovery link'),
+                ),
+                const SizedBox(height: 4),
+                TextButton(
+                  onPressed: () => setState(() {
+                    _recovery = false;
+                    _recoverySent = false;
+                    _recoveryError = '';
+                  }),
+                  child: const Text('Back to sign in'),
+                ),
+              ] else ...[
+                SegToggle<bool>(
+                  options: [(false, 'Sign in'), (true, 'Create account')],
+                  selected: _register,
+                  onChanged: (v) => setState(() {
+                    _register = v;
+                    _error = '';
+                  }),
+                ),
+                const SizedBox(height: 14),
+                if (_register) ...[
+                  const SemLabel('Name'),
+                  TextField(
+                    controller: _name,
+                    textInputAction: TextInputAction.next,
+                    decoration: const InputDecoration(hintText: 'Your name'),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                const SemLabel('Email'),
+                TextField(
+                  controller: _email,
+                  keyboardType: TextInputType.emailAddress,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(hintText: 'you@school.example'),
+                ),
+                const SizedBox(height: 12),
+                const SemLabel('Password'),
+                TextField(
+                  controller: _password,
+                  obscureText: _obscure,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _submit(),
+                  decoration: InputDecoration(
+                    hintText: _register ? 'at least 8 characters' : '',
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                        size: 18,
+                        color: sem.inkSoft,
+                      ),
+                      onPressed: () => setState(() => _obscure = !_obscure),
+                    ),
+                  ),
+                ),
+                if (!_register)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: TextButton(
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 0),
+                          minimumSize: const Size(0, 32),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        onPressed: () => setState(() {
+                          _recovery = true;
+                          _recoverySent = false;
+                          _recoveryError = '';
+                        }),
+                        child: Text(
+                          'Forgot password?',
+                          style: Theme.of(context)
+                              .textTheme
+                              .labelSmall!
+                              .copyWith(color: sem.inkSoft),
+                        ),
+                      ),
+                    ),
+                  ),
+                if (_error.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(_error, style: TextStyle(color: sem.marker, fontSize: 13)),
+                ],
+                const SizedBox(height: 16),
+                SemPrimaryButton(
+                  onPressed: _busy ? null : _submit,
+                  child: _busy
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : Text(_register ? 'Create account & sign in' : 'Sign in'),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.cloud_off_outlined, size: 12, color: sem.inkSoft),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Authenticated by your Appwrite project — the password never touches the '
+                        'Semester server. Sessions are managed by the Appwrite SDK.',
+                        style: Theme.of(context).textTheme.labelSmall!.copyWith(height: 1.5),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ],
 
             const SizedBox(height: 20),
