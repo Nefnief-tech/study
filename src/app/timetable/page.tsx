@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Eraser, RefreshCcw, Table2, Upload } from "lucide-react";
 import type { PortalSub } from "@/lib/server/portal";
-import type { TimetableEntry } from "@/lib/types";
 import { useTimetableStore } from "@/lib/store/timetable";
 import { usePortalStore } from "@/lib/store/portal";
 import { useSubjectsStore } from "@/lib/store/subjects";
@@ -21,14 +20,27 @@ import PageSkeleton from "@/components/ui/PageSkeleton";
 import { EmptyState, SubjectDot } from "@/components/ui/bits";
 
 const PORTAL_WEEKDAY: Record<string, string> = {
-  Mo: "Mon",
-  Di: "Tue",
-  Mi: "Wed",
-  Do: "Thu",
-  Fr: "Fri",
-  Sa: "Sat",
-  So: "Sun",
+  mo: "Mon",
+  di: "Tue",
+  mi: "Wed",
+  do: "Thu",
+  fr: "Fri",
+  sa: "Sat",
+  so: "Sun",
 };
+
+/** periods a plan row covers: "3" → [3], "3 - 4" → [3, 4] (double lessons) */
+function subPeriods(period: string): number[] {
+  const range = period.match(/(\d+)\s*[-–/]\s*(\d+)/);
+  if (range) {
+    const a = parseInt(range[1], 10);
+    const b = parseInt(range[2], 10);
+    if (Number.isFinite(a) && Number.isFinite(b) && b >= a)
+      return Array.from({ length: Math.min(b - a + 1, 12) }, (_, i) => a + i);
+  }
+  const p = parseInt(period, 10);
+  return Number.isFinite(p) ? [p] : [];
+}
 
 function subjectColor(name: string, names: Map<string, string>) {
   return names.get(name.toLowerCase()) ?? PALETTE[name.length % PALETTE.length];
@@ -74,23 +86,25 @@ export default function TimetablePage() {
 
   const todayCol = DAY_ORDER[new Date().getDay() === 0 ? 6 : new Date().getDay() - 1];
 
-  /** substitute-plan entries that affect one timetable cell (day + period + subject).
-   *  course codes are CASE-SENSITIVE: 2ph1 ≠ 2PH1. A sub matches a lesson when
-   *  the course code equals the lesson's subject OR its teacher — the timetable
-   *  JSON carries the course code in the teacher field. */
-  const relevantSubs: PortalSub[] = portal.data
-    ? portal.data.days.flatMap((d) => d.entries).filter((s) =>
-        portal.data!.courses.some((c) => c.trim() === s.course.trim()))
-    : [];
+  /** substitute-plan entries that affect the grid. When the membership list
+   *  ("Mitglied in Kursen") could not be scraped, all rows are shown rather
+   *  than none. */
+  const relevantSubs: PortalSub[] = useMemo(() => {
+    if (!portal.data) return [];
+    const all = portal.data.days.flatMap((d) => d.entries);
+    const own = portal.data.courses.map((c) => c.trim()).filter(Boolean);
+    return own.length ? all.filter((s) => own.includes(s.course.trim())) : all;
+  }, [portal.data]);
 
-  const cellSubsFor = (day: string, period: number, items: TimetableEntry[]) =>
+  /** plan rows landing in one timetable cell: same weekday + overlapping
+   *  period. The course code itself is not re-checked against the lesson —
+   *  the timetable JSON may spell subjects differently ("Mathe" vs "2ph1"),
+   *  and the membership filter already picked the student's own courses. */
+  const cellSubsFor = (day: string, period: number) =>
     relevantSubs.filter(
       (s) =>
-        PORTAL_WEEKDAY[s.weekday] === day &&
-        parseInt(s.period, 10) === period &&
-        items.some(
-          (e) => e.subject.trim() === s.course.trim() || e.teacher?.trim() === s.course.trim(),
-        ),
+        PORTAL_WEEKDAY[(s.weekday ?? "").toLowerCase()] === day &&
+        subPeriods(s.period).includes(period),
     );
 
   const load = (text: string) => {
@@ -332,7 +346,12 @@ export default function TimetablePage() {
               <span className="inline-flex items-center gap-1.5">
                 <span className="inline-block size-2.5 rounded-full bg-amber" /> substituted
               </span>
-              {relevantSubs.length > 0 && <span>· {relevantSubs.length} for your courses</span>}
+              {relevantSubs.length > 0 && (
+                <span>
+                  · {relevantSubs.length}
+                  {portal.data?.courses.length ? " for your courses" : ""}
+                </span>
+              )}
             </div>
           )}
           <div className="overflow-x-auto rounded-2xl border border-line bg-card">
@@ -373,7 +392,7 @@ export default function TimetablePage() {
                     </td>
                     {days.map((d) => {
                       const items = entries.filter((e) => e.day === d && e.period === p);
-                      const cellSubs = cellSubsFor(d, p, items);
+                      const cellSubs = cellSubsFor(d, p);
                       const cancelled = cellSubs.some((s) => s.cancelled);
                       const substituted = cellSubs.some((s) => !s.cancelled);
                       return (

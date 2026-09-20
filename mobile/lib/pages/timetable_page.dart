@@ -12,14 +12,28 @@ import '../widgets/controls.dart';
 /// Port of timetable/page.tsx — weekly grid + Eltern-portal substitute plan.
 
 const _portalWeekday = {
-  'Mo': 'Mon',
-  'Di': 'Tue',
-  'Mi': 'Wed',
-  'Do': 'Thu',
-  'Fr': 'Fri',
-  'Sa': 'Sat',
-  'So': 'Sun',
+  'mo': 'Mon',
+  'di': 'Tue',
+  'mi': 'Wed',
+  'do': 'Thu',
+  'fr': 'Fri',
+  'sa': 'Sat',
+  'so': 'Sun',
 };
+
+/// periods a plan row covers: "3" → [3], "3 - 4" → [3, 4] (double lessons)
+List<int> _subPeriods(String period) {
+  final range = RegExp(r'(\d+)\s*[-–/]\s*(\d+)').firstMatch(period);
+  if (range != null) {
+    final a = int.tryParse(range.group(1)!);
+    final b = int.tryParse(range.group(2)!);
+    if (a != null && b != null && b >= a) {
+      return [for (var i = a; i <= b && i - a < 12; i++) i];
+    }
+  }
+  final p = int.tryParse(period);
+  return p == null ? const [] : [p];
+}
 
 String _subjectColor(String name, Map<String, String> colorsByName) =>
     colorsByName[name.toLowerCase()] ?? PALETTE[name.length % PALETTE.length];
@@ -90,17 +104,22 @@ class _TimetablePageState extends State<TimetablePage> {
         final now = DateTime.now();
         final todayCol = DAY_ORDER[now.weekday == 7 ? 6 : now.weekday - 1];
 
-        // substitute-plan entries affecting the student's own courses
-        // (course codes are CASE-SENSITIVE: 2ph1 ≠ 2PH1)
+        // substitute-plan entries that affect the grid — the student's own
+        // courses when the membership list was scraped, otherwise all rows
         final relevantSubs = portal.data == null
             ? <PortalSub>[]
-            : portal.data!.allEntries
-                  .where(
-                    (s) => portal.data!.courses.any(
-                      (c) => c.trim() == s.course.trim(),
-                    ),
-                  )
-                  .toList();
+            : () {
+                final all = portal.data!.allEntries;
+                final own = portal.data!.courses
+                    .map((c) => c.trim())
+                    .where((c) => c.isNotEmpty)
+                    .toList();
+                return own.isEmpty
+                    ? all
+                    : all
+                        .where((s) => own.contains(s.course.trim()))
+                        .toList();
+              }();
 
         return SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
@@ -322,13 +341,11 @@ class _TimetablePageState extends State<TimetablePage> {
                                           relevantSubs,
                                           d,
                                           p,
-                                          entries,
                                         ),
                                         substituted: _cellSubstituted(
                                           relevantSubs,
                                           d,
                                           p,
-                                          entries,
                                         ),
                                         child: _cellContent(
                                           context,
@@ -543,22 +560,18 @@ class _TimetablePageState extends State<TimetablePage> {
     return flex ? Expanded(child: cell) : cell;
   }
 
+  /// plan rows landing in one timetable cell: same weekday + overlapping
+  /// period. The course code is not re-checked against the lesson — the
+  /// timetable JSON may spell subjects differently ("Mathe" vs "2ph1"), and
+  /// the membership filter already picked the student's own courses.
   List<PortalSub> _cellSubsFor(
     List<PortalSub> subs,
     String day,
     int period,
-    List<TimetableEntry> entries,
   ) {
     return subs.where((s) {
-      if (_portalWeekday[s.weekday] != day) return false;
-      if (int.tryParse(s.period) != period) return false;
-      return entries.any(
-        (e) =>
-            e.day == day &&
-            e.period == period &&
-            (e.subject.trim() == s.course.trim() ||
-                e.teacher?.trim() == s.course.trim()),
-      );
+      if (_portalWeekday[s.weekday.toLowerCase()] != day) return false;
+      return _subPeriods(s.period).contains(period);
     }).toList();
   }
 
@@ -566,15 +579,13 @@ class _TimetablePageState extends State<TimetablePage> {
     List<PortalSub> subs,
     String day,
     int period,
-    List<TimetableEntry> entries,
-  ) => _cellSubsFor(subs, day, period, entries).any((s) => s.cancelled);
+  ) => _cellSubsFor(subs, day, period).any((s) => s.cancelled);
 
   bool _cellSubstituted(
     List<PortalSub> subs,
     String day,
     int period,
-    List<TimetableEntry> entries,
-  ) => _cellSubsFor(subs, day, period, entries).any((s) => !s.cancelled);
+  ) => _cellSubsFor(subs, day, period).any((s) => !s.cancelled);
 
   Widget _cellContent(
     BuildContext context,
@@ -588,7 +599,7 @@ class _TimetablePageState extends State<TimetablePage> {
     final items = entries
         .where((e) => e.day == day && e.period == period)
         .toList();
-    final cellSubs = _cellSubsFor(relevantSubs, day, period, entries);
+    final cellSubs = _cellSubsFor(relevantSubs, day, period);
 
     if (items.isEmpty && cellSubs.isEmpty) {
       return Text(

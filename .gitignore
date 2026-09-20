@@ -48,3 +48,6 @@ next-env.d.ts
 
 # emulator screenshots from the android-dev MCP tool
 test-artifacts/
+
+# mimosa security-scan working state
+.mimosa/
