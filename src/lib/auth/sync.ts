@@ -635,6 +635,48 @@ async function runReconcile(user: AuthUser) {
   }
 }
 
+/**
+ * The portal plan is a FULL SNAPSHOT: one fetch replaces the whole thing.
+ * The generic row sync only retracts rows this browser has pushed or pulled
+ * before, so entries from the phone or from an older fetch would linger in
+ * the cloud forever — stale substitutions that then leak into the timetable
+ * grid and the daily digest. Called after every successful portal fetch:
+ * the fetched plan is authoritative — push it, then tombstone every other
+ * live row of this user.
+ */
+export async function reconcilePortalSnapshot(): Promise<void> {
+  const { user, status } = useAuthStore.getState();
+  if (status !== "signed-in" || !user) return;
+  for (const key of ["portalEntries", "portalCourses"] as const) {
+    const def = ROW_STORES[key];
+    try {
+      const current = def.list();
+      const currentIds = new Set<string>();
+      const digests: Record<string, string> = {};
+      for (const entity of current) {
+        currentIds.add(entity.id);
+        digests[entity.id] = await rowDigest(entity, def);
+        await restUpsertRow(
+          def.table,
+          entity.id,
+          { ...def.toRow(entity), userId: user.id },
+          user.id,
+        );
+      }
+      const cloudRows = await restListRows(def.table, user.id);
+      for (const row of cloudRows) {
+        if (row.deleted === true) continue;
+        if (!currentIds.has(String(row.$id))) {
+          await restSoftDeleteRow(def.table, String(row.$id));
+        }
+      }
+      useSyncMetaStore.getState().setRowDigests(key, digests);
+    } catch (e) {
+      console.warn(`[sync] portal snapshot ${key} failed:`, e);
+    }
+  }
+}
+
 let retryTimer: ReturnType<typeof setInterval> | undefined = undefined;
 
 /** while the sync is incomplete, keep retrying every 30 s — flaky-DNS windows

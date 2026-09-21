@@ -16,6 +16,7 @@ import {
 } from "@/lib/timetable";
 import { cn, PALETTE } from "@/lib/utils";
 import { getAuthHeaders } from "@/lib/auth/appwrite";
+import { reconcilePortalSnapshot } from "@/lib/auth/sync";
 import PageSkeleton from "@/components/ui/PageSkeleton";
 import { EmptyState, SubjectDot } from "@/components/ui/bits";
 
@@ -154,7 +155,10 @@ export default function TimetablePage() {
       }
       usePortalStore.getState().setData(json as PortalPlanJson);
       // the plan syncs as structured rows (portal_entries/portal_courses) —
-      // no credentials ever leave the device
+      // no credentials ever leave the device. The fetch is authoritative:
+      // retract stale rows from earlier fetches / the phone so the cloud
+      // never keeps two versions of the same slot alive.
+      void reconcilePortalSnapshot();
     } catch {
       portal.setError("Could not reach the portal.");
     } finally {
