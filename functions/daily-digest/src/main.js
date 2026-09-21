@@ -87,25 +87,44 @@ async function aw(path, options = {}) {
   return res.json();
 }
 
-/** structured rows of one table (new tablesdb API, JSON queries) */
-async function listRows(table, userId) {
+/** flatten JSON queries into `queries[i]=…` params (new TablesDB API) */
+function queriesParam(queries) {
   const params = new URLSearchParams();
-  [
-    { method: "equal", attribute: "userId", values: [userId] },
-    { method: "limit", values: [100] },
-  ].forEach((q, i) => params.append(`queries[${i}]`, JSON.stringify(q)));
-  const res = await aw(
-    `/tablesdb/${DATABASE_ID}/tables/${table}/rows?${params.toString()}`,
-  );
-  return res?.rows ?? [];
+  queries.forEach((q, i) => params.append(`queries[${i}]`, JSON.stringify(q)));
+  return params.toString();
 }
 
-/** list rows across ALL users of a table (discovery, no userId filter) */
+/** every row of a table for a user — follows cursors past the 100/page cap */
+async function listRows(table, userId) {
+  const rows = [];
+  let cursor;
+  for (;;) {
+    const queries = [
+      { method: "equal", attribute: "userId", values: [userId] },
+      { method: "limit", values: [100] },
+    ];
+    if (cursor) queries.push({ method: "cursor", values: [cursor] });
+    const res = await aw(`/tablesdb/${DATABASE_ID}/tables/${table}/rows?${queriesParam(queries)}`);
+    const page = res?.rows ?? [];
+    rows.push(...page);
+    if (page.length < 100) return rows;
+    cursor = page[page.length - 1].$id;
+  }
+}
+
+/** all rows of a table (user discovery, no userId filter), cursor-paginated */
 async function listAllRows(table) {
-  const params = new URLSearchParams();
-  params.append("queries[0]", JSON.stringify({ method: "limit", values: [100] }));
-  const res = await aw(`/tablesdb/${DATABASE_ID}/tables/${table}/rows?${params.toString()}`);
-  return res?.rows ?? [];
+  const rows = [];
+  let cursor;
+  for (;;) {
+    const queries = [{ method: "limit", values: [100] }];
+    if (cursor) queries.push({ method: "cursor", values: [cursor] });
+    const res = await aw(`/tablesdb/${DATABASE_ID}/tables/${table}/rows?${queriesParam(queries)}`);
+    const page = res?.rows ?? [];
+    rows.push(...page);
+    if (page.length < 100) return rows;
+    cursor = page[page.length - 1].$id;
+  }
 }
 
 /** every user that has at least one synced row (union over a few tables).
@@ -121,6 +140,28 @@ async function usersWithData() {
   return [...userIds];
 }
 
+/** push the admin when a run fails — Appwrite won't tell anyone. Best-effort:
+ * the alert must never mask the original failure, and the per-day id keeps a
+ * flapping schedule from spamming. */
+const ALERT_USER = process.env.ALERT_USER || "";
+async function alertPush(what, detail) {
+  if (!ALERT_USER) return;
+  const today = ymd(new Date());
+  const hash = createHash("sha256").update(`alert:${what}:${today}`).digest("hex").slice(0, 8);
+  try {
+    await aw("/messaging/messages/push", {
+      method: "POST",
+      body: JSON.stringify({
+        messageId: `alert-${what}-${today}-${hash}`.slice(0, 36),
+        title: `${what} failed`,
+        body: detail.slice(0, 300),
+        users: [ALERT_USER],
+        draft: false,
+      }),
+    });
+  } catch {}
+}
+
 async function sendPush(userId, slot, ymd, title, body) {
   const hash = createHash("sha256").update(`${userId}:${slot}:${ymd}`).digest("hex").slice(0, 8);
   const messageId = `dgt-${slot}-${ymd}-${hash}`.slice(0, 36);
@@ -133,6 +174,8 @@ async function sendPush(userId, slot, ymd, title, body) {
         body,
         users: [userId],
         draft: false,
+        // tap-through: the apps read data.route and land on the page
+        data: { route: "timetable" },
       }),
     });
     return "sent";
@@ -320,6 +363,7 @@ export default async ({ req, res, log, error }) => {
     userIds = await usersWithData();
   } catch (e) {
     error(`Could not list rows: ${e.message}`);
+    await alertPush("digest", e.message);
     return res.json({ ok: false, error: "database_read_failed", detail: e.message }, 500);
   }
 
@@ -385,6 +429,11 @@ export default async ({ req, res, log, error }) => {
       error(`user ${userId}: ${e.message}`);
       results.push({ userId, error: e.message });
     }
+  }
+
+  // every single user errored → the run effectively failed; alert once
+  if (results.length > 0 && results.every((r) => r.error)) {
+    await alertPush("digest", results.map((r) => r.error).join(" | "));
   }
 
   return res.json({ ok: true, slot, users: results.length, results });
