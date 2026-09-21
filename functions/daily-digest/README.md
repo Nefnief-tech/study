@@ -33,7 +33,8 @@ appwrite push functions             # creates the function, cron schedule + scop
 `appwrite.config.json` defines:
 
 - **runtime** `node-22` · **entrypoint** `src/main.js` · no dependencies (plain `fetch`)
-- **schedule** `30 15 * * *` (UTC) = **17:30 CEST** in summer, 16:30 CET in winter —
+- **schedule** `20 5,11,19 * * *` (UTC) = **07:20, 13:30 and 21:00 CEST** in summer,
+  one hour earlier in winter (Cloud rejects timezone suffixes in the cron) —
   edit the cron in `appwrite.config.json` and re-push to change it
 - **scopes** `documents.read` + `messages.write` — declared in appwrite.config.json, but
   Appwrite Cloud does **not** inject the key automatically, so create a standard API key with

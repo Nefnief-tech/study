@@ -1,16 +1,18 @@
 import { createHash } from "node:crypto";
 
 /**
- * Semester — daily digest (Appwrite Function, scheduled twice per day).
+ * Semester — daily digest (Appwrite Function, scheduled three times per day).
  *
- * Schedule: "20 7,15 * * * Europe/Vienna" — 07:20 (morning) and 15:20
- * (afternoon) Austria time. The function derives the slot from the fire time
- * (UTC hour < 10 → morning) and sends ONE consolidated push per user:
+ * Schedule: "20 5,11,19 * * *" — 07:20, 13:30 and 21:00 Austria time in
+ * summer (UTC+2; an hour earlier in winter, Cloud rejects TZ suffixes).
+ * The function derives the slot from the fire time (UTC hour: <10 → morning,
+ * <15 → afternoon, else evening) and sends ONE consolidated push per user:
  *
- *   morning   — today's timetable (with live substitutions), what's due
- *               today/overdue, and events of the coming week
- *   afternoon — tomorrow's timetable, what's due tomorrow/overdue, and the
- *               next 7 days of events
+ *   morning   (07:20) — today's timetable (with live substitutions),
+ *               what's due today/overdue, and events of the coming week
+ *   afternoon (13:30) — tomorrow's timetable, what's due tomorrow/overdue,
+ *               and the next 7 days of events
+ *   evening   (21:00) — tomorrow's plan again, ready before bedtime
  *
  * Everything is read as STRUCTURED ROWS from the `semester` tables (one row
  * per entity, `deleted` tombstones): subjects · todos · homeworks · events ·
@@ -57,8 +59,11 @@ const JS_DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const ALLOWED_HOSTS = new Set(["fra.cloud.appwrite.io", "cloud.appwrite.io"]);
 
 async function aw(path, options = {}) {
-  // path is always a literal Appwrite API route built inside this file
-  const url = new URL(path, ENDPOINT);
+  // path is always a literal Appwrite API route built inside this file.
+  // plain concatenation, NOT new URL(path, ENDPOINT): a "/"-prefixed path
+  // resolves against the ORIGIN, silently dropping the /v1 segment (404 HTML
+  // → "no users" — this exact bug silenced the whole digest for two days)
+  const url = new URL(`${ENDPOINT}${path}`);
   if (url.protocol !== "https:" || !ALLOWED_HOSTS.has(url.hostname)) {
     throw new Error(`daily-digest: refusing endpoint ${url.protocol}//${url.hostname}`);
   }
@@ -103,11 +108,13 @@ async function listAllRows(table) {
   return res?.rows ?? [];
 }
 
-/** every user that has at least one synced row (union over a few tables) */
+/** every user that has at least one synced row (union over a few tables).
+ * No error swallowing here: a failed table read must surface as a 500 with
+ * logs, not silently turn into "no users" (that bug cost us days once) */
 async function usersWithData() {
   const userIds = new Set();
   for (const table of ["subjects", "timetable_entries", "todos", "events"]) {
-    const rows = await listAllRows(table).catch(() => []);
+    const rows = await listAllRows(table);
     for (const row of rows) if (row.userId) userIds.add(row.userId);
     if (userIds.size > 0) break; // one table listing every user is enough
   }
@@ -155,9 +162,10 @@ function addDays(now, n) {
   return d;
 }
 
-/** morning run (fired ~07:20 local) or afternoon run (~15:20 local) */
+/** morning (~07:20 local), afternoon (~13:30) or evening (~21:00) run */
 function slotOf(now) {
-  return now.getUTCHours() < 10 ? "morning" : "afternoon";
+  const h = now.getUTCHours();
+  return h < 10 ? "morning" : h < 15 ? "afternoon" : "evening";
 }
 
 /* ------------------------------------------------------------------ */
