@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import {
   BookOpen,
   CalendarDays,
@@ -20,7 +20,6 @@ import { initSync, signOut } from "@/lib/auth/sync";
 import { pingAppwrite } from "@/lib/auth/appwrite";
 import { useAuthStore } from "@/lib/store/auth";
 import ThemeToggle from "@/components/ui/ThemeToggle";
-import AuthModal from "@/components/auth/AuthModal";
 
 const NAV: Array<{ href: Route; label: string; icon: LucideIcon }> = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
@@ -38,7 +37,6 @@ function isActive(pathname: string, href: string) {
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const [authOpen, setAuthOpen] = useState(false);
   const auth = useAuthStore();
 
   useEffect(() => {
@@ -115,9 +113,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           ) : auth.status === "signed-in" && auth.user ? (
             <div className="space-y-2.5">
-              <button
-                onClick={() => setAuthOpen(true)}
-                className="flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-1 py-1 text-left transition-colors hover:bg-ink/5"
+              <Link
+                href="/account"
+                className="flex w-full items-center gap-2.5 rounded-lg px-1 py-1 text-left transition-colors hover:bg-ink/5"
               >
                 <div className="grid size-8 shrink-0 place-items-center rounded-full bg-accent-soft text-accent">
                   <UserRound className="size-3.5" />
@@ -133,7 +131,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                     {syncLabel}
                   </p>
                 </div>
-              </button>
+              </Link>
               <div className="flex items-center justify-between">
                 <button
                   onClick={() => void signOut()}
@@ -146,10 +144,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           ) : (
             <div className="flex items-start justify-between gap-3">
-              <button className="btn-ghost flex-1" onClick={() => setAuthOpen(true)}>
+              <Link href="/account" className="btn-ghost flex-1">
                 <UserRound className="size-4" />
                 {auth.status === "loading" ? "checking…" : "Sign in to sync"}
-              </button>
+              </Link>
               <ThemeToggle />
             </div>
           )}
@@ -166,11 +164,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             {current?.label ?? "Overview"}
           </span>
           {auth.status !== "unconfigured" && (
-            <button
-              onClick={() => setAuthOpen(true)}
+            <Link
+              href="/account"
               aria-label="Account"
               className={cn(
-                "relative grid size-8 cursor-pointer place-items-center rounded-lg transition-colors hover:bg-ink/5",
+                "relative grid size-8 place-items-center rounded-lg transition-colors hover:bg-ink/5",
                 auth.status === "signed-in" ? "text-accent" : "text-ink-soft",
               )}
             >
@@ -183,7 +181,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   )}
                 />
               )}
-            </button>
+            </Link>
           )}
           <ThemeToggle />
         </div>
@@ -217,8 +215,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           );
         })}
       </nav>
-
-      <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} />
     </div>
   );
 }
