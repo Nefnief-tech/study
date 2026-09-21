@@ -11,7 +11,7 @@
                 "documents.read",
                 "messages.write"
             ],
-            "schedule": "20 5,13 * * *",
+            "schedule": "20 5,11,19 * * *",
             "timeout": 60,
             "enabled": true,
             "logging": true,
@@ -19,6 +19,24 @@
             "commands": "npm install --no-audit --no-fund",
             "path": "functions/daily-digest",
             "$id": "daily-digest"
+        },
+        {
+            "name": "Homework update",
+            "runtime": "node-22",
+            "execute": [],
+            "events": [],
+            "scopes": [
+                "documents.read",
+                "messages.write"
+            ],
+            "schedule": "0 13,18 * * *",
+            "timeout": 60,
+            "enabled": true,
+            "logging": true,
+            "entrypoint": "src/main.js",
+            "commands": "npm install --no-audit --no-fund",
+            "path": "functions/homework-update",
+            "$id": "homework-update"
         }
     ],
     "databases": [
