@@ -37,6 +37,10 @@ const AndroidNotificationChannel _channel = AndroidNotificationChannel(
 @pragma('vm:entry-point')
 Future<void> semesterFirebaseMessagingHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
+  // while the app is backgrounded/terminated, Android already displays
+  // messages that carry a notification payload — showing a local one here
+  // too made every push arrive twice. Only data-only messages need us.
+  if (message.notification != null) return;
   await _showNotification(message);
 }
 
@@ -63,6 +67,8 @@ Future<void> _showNotification(RemoteMessage message) async {
 class PushService {
   static bool available = false;
   static bool registered = false;
+  static bool _initialized = false;
+  static SyncStatus? _lastAuthStatus;
   static String? _token;
   /// Appwrite push-target id of the currently signed-in user on this device —
   /// derived per install AND per user, so account switches never collide with
@@ -71,6 +77,10 @@ class PushService {
   static String? _targetUserId;
 
   static Future<void> init() async {
+    // main() and AppShell.initState both call init() — run once, or the
+    // permission dialog and target sync race each other
+    if (_initialized) return;
+    _initialized = true;
     try {
       await Firebase.initializeApp();
     } catch (_) {
@@ -116,6 +126,13 @@ class PushService {
       _syncTarget();
     });
 
+    // the session is NOT persisted — auth status flips to signedIn only after
+    // initSync()'s network restore, long after this init() ran, so the plain
+    // _syncTarget() below would silently skip on every signed-in cold start.
+    // Re-arm on the transition INTO signedIn (covers startup restore and
+    // explicit sign-ins; sign-out cleanup keeps its own hook)
+    Stores.I.auth.addListener(_onAuthChanged);
+
     try {
       _token = await FirebaseMessaging.instance.getToken();
     } catch (e) {
@@ -123,6 +140,14 @@ class PushService {
       return;
     }
     await _syncTarget();
+  }
+
+  static void _onAuthChanged() {
+    final status = Stores.I.auth.status;
+    final becameSignedIn =
+        status == SyncStatus.signedIn && _lastAuthStatus != SyncStatus.signedIn;
+    _lastAuthStatus = status;
+    if (becameSignedIn) _syncTarget();
   }
 
   /// stable per-user, per-install target id: same user + same install keeps
