@@ -52,6 +52,7 @@ Future<void> _showNotification(RemoteMessage message) async {
     id: message.messageId?.hashCode ?? DateTime.now().millisecondsSinceEpoch % 0x7fffffff,
     title: title,
     body: body,
+    payload: message.data['route'] as String?,
     notificationDetails: NotificationDetails(
       android: AndroidNotificationDetails(
         _channel.id,
@@ -70,6 +71,22 @@ class PushService {
   static bool _initialized = false;
   static SyncStatus? _lastAuthStatus;
   static String? _token;
+
+  /// where a tapped push should land ('timetable' · 'homework' · 'calendar'),
+  /// set by the functions as the message data payload
+  static void Function(String route)? onRoute;
+
+  /// a route tapped before the shell registered [onRoute] — consumed there
+  static String? pendingRoute;
+
+  static void _navigate(String? route) {
+    if (route == null || route.isEmpty) return;
+    if (onRoute != null) {
+      onRoute!(route);
+    } else {
+      pendingRoute = route;
+    }
+  }
   /// Appwrite push-target id of the currently signed-in user on this device —
   /// derived per install AND per user, so account switches never collide with
   /// a target owned by a different user (target ids are globally unique)
@@ -96,6 +113,7 @@ class PushService {
         settings: const InitializationSettings(
           android: AndroidInitializationSettings('@mipmap/ic_launcher'),
         ),
+        onDidReceiveNotificationResponse: (response) => _navigate(response.payload),
       );
       await _localNotifications
           .resolvePlatformSpecificImplementation<
@@ -119,6 +137,15 @@ class PushService {
       // foreground: FCM does not surface the system notification
       // automatically, so show it through the local plugin
       _showNotification(message);
+    });
+
+    // taps on a notification that opened/resumed the app → land on the
+    // page the push is about (the functions tag messages with data.route)
+    FirebaseMessaging.instance.getInitialMessage().then((message) {
+      _navigate(message?.data['route'] as String?);
+    }).catchError((_) {});
+    FirebaseMessaging.onMessageOpenedApp.listen((message) {
+      _navigate(message.data['route'] as String?);
     });
 
     FirebaseMessaging.instance.onTokenRefresh.listen((token) {

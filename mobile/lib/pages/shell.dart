@@ -63,6 +63,27 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           MaterialPageRoute(builder: (_) => const GradesPage()),
         );
     AppNav.I.openAccount = () => AuthSheet.show(context);
+    // tapped pushes land on the page they are about — routes set by the
+    // functions as the message data payload ('timetable' · 'homework' ·
+    // 'calendar'). A route tapped before this init ran is waiting in
+    // PushService.pendingRoute.
+    PushService.onRoute = _handlePushRoute;
+    final pendingRoute = PushService.pendingRoute;
+    if (pendingRoute != null) {
+      PushService.pendingRoute = null;
+      _handlePushRoute(pendingRoute);
+    }
+  }
+
+  void _handlePushRoute(String route) {
+    switch (route) {
+      case 'homework':
+        AppNav.I.openHomework?.call();
+      case 'timetable':
+        AppNav.I.tab.value = 2; // Timetable tab
+      case 'calendar':
+        AppNav.I.tab.value = 3; // Calendar tab
+    }
   }
 
   @override

@@ -608,6 +608,61 @@ Future<void> syncRowStore(AuthUser user, String storeKey) async {
   Stores.I.syncMeta.setRowDigests(adapter.table, digests);
 }
 
+/// The portal plan is a FULL SNAPSHOT: one fetch replaces the whole thing.
+/// The generic row sync only retracts rows this device pushed or pulled
+/// before, so entries from the web or from an older fetch would linger in
+/// the cloud forever and leak stale substitutions into the daily digest.
+/// Called after every successful portal fetch: the fetched plan is
+/// authoritative — push it, then tombstone every other live row of this
+/// user (web parity: reconcilePortalSnapshot in src/lib/auth/sync.ts).
+Future<void> reconcilePortalSnapshot() async {
+  final auth = Stores.I.auth;
+  if (auth.status != SyncStatus.signedIn || auth.user == null) return;
+  final user = auth.user!;
+  for (final storeKey in ['portalEntries', 'portalCourses']) {
+    final adapter = _rowAdapters.firstWhere((a) => a.storeKey == storeKey);
+    try {
+      final current = adapter.list();
+      final currentIds = <String>{};
+      final digests = <String, String>{};
+      for (final entity in current) {
+        final id = adapter.idOf(entity);
+        currentIds.add(id);
+        final row = {...adapter.toRow(entity), 'userId': user.id};
+        digests[id] = _rowDigestOf(row);
+        await _restUpsertRow(
+          table: adapter.table,
+          rowId: id,
+          row: row,
+          userId: user.id,
+        );
+      }
+      final rows = await tablesDB.listRows(
+        databaseId: kDatabaseId,
+        tableId: adapter.table,
+        queries: [Query.equal('userId', user.id), Query.limit(100)],
+      );
+      for (final doc in rows.rows) {
+        if (doc.data['deleted'] == true) continue;
+        if (currentIds.contains(doc.$id)) continue;
+        try {
+          await tablesDB.updateRow(
+            databaseId: kDatabaseId,
+            tableId: adapter.table,
+            rowId: doc.$id,
+            data: {'deleted': true, 'userId': user.id},
+          );
+        } catch (_) {
+          // already gone / never existed — fine
+        }
+      }
+      Stores.I.syncMeta.setRowDigests(adapter.table, digests);
+    } catch (e) {
+      debugPrint('[sync] portal snapshot $storeKey failed: $e');
+    }
+  }
+}
+
 /// set while the sync engine writes remote data into the stores, so those
 /// writes don't schedule pushes back to the cloud
 bool applyingRemote = false;

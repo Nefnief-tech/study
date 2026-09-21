@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../appwrite/sync.dart';
 import '../models/types.dart';
 import '../stores/registry.dart';
 import '../services/api.dart';
@@ -694,7 +695,10 @@ Future<void> doPortalFetch(BuildContext context) async {
   try {
     final plan = await SemesterApi.fetchPortalPlan();
     portal.setData(plan);
-    // best-effort: plan (no credentials) into the cloud for the daily digest
+    // best-effort: plan (no credentials) into the cloud for the daily digest.
+    // The fetch is authoritative — retract rows from older fetches / the web
+    // so the cloud never keeps two versions of the same slot alive.
+    await reconcilePortalSnapshot();
   } on ApiException catch (e) {
     portal.setError(e.message);
   } catch (_) {
