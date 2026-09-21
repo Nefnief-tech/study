@@ -37,6 +37,24 @@
             "commands": "npm install --no-audit --no-fund",
             "path": "functions/homework-update",
             "$id": "homework-update"
+        },
+        {
+            "name": "Weekly digest",
+            "runtime": "node-22",
+            "execute": [],
+            "events": [],
+            "scopes": [
+                "documents.read",
+                "messages.write"
+            ],
+            "schedule": "0 19 * * 0",
+            "timeout": 60,
+            "enabled": true,
+            "logging": true,
+            "entrypoint": "src/main.js",
+            "commands": "npm install --no-audit --no-fund",
+            "path": "functions/weekly-digest",
+            "$id": "weekly-digest"
         }
     ],
     "databases": [
