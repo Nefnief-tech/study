@@ -8,6 +8,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../appwrite/client.dart';
+import '../navigation.dart' show AppNav;
 import '../stores/auth_store.dart' show SyncStatus;
 import '../stores/registry.dart';
 
@@ -72,20 +73,11 @@ class PushService {
   static SyncStatus? _lastAuthStatus;
   static String? _token;
 
-  /// where a tapped push should land ('timetable' · 'homework' · 'calendar'),
-  /// set by the functions as the message data payload
-  static void Function(String route)? onRoute;
-
-  /// a route tapped before the shell registered [onRoute] — consumed there
-  static String? pendingRoute;
-
+  /// where a tapped push should land — the functions tag messages with
+  /// data.route ('timetable' · 'homework' · 'calendar'); AppNav resolves it
   static void _navigate(String? route) {
     if (route == null || route.isEmpty) return;
-    if (onRoute != null) {
-      onRoute!(route);
-    } else {
-      pendingRoute = route;
-    }
+    AppNav.I.handle(route);
   }
   /// Appwrite push-target id of the currently signed-in user on this device —
   /// derived per install AND per user, so account switches never collide with

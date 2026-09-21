@@ -1,7 +1,7 @@
 name: semester
 description: Semester — your study desk, on the go. Flutter companion to the Semester web app.
 publish_to: "none"
-version: 0.1.0+9
+version: 0.1.0+10
 
 environment:
   sdk: ^3.9.0
@@ -10,6 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
+  app_links: ^6.3.2
   appwrite: ^26.2.0
   shared_preferences: ^2.5.5
   crypto: ^3.0.7

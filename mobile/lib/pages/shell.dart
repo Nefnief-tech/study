@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../appwrite/sync.dart';
+import '../navigation.dart';
 import '../services/api.dart';
 import '../services/push.dart';
 import '../stores/auth_store.dart' show SyncStatus;
@@ -8,6 +9,7 @@ import '../stores/registry.dart';
 import '../theme/app_theme.dart';
 import '../widgets/auth_sheet.dart';
 import '../widgets/controls.dart';
+import '../widgets/motion.dart';
 import 'calendar_page.dart';
 import 'dashboard_page.dart';
 import 'grades_page.dart';
@@ -16,20 +18,10 @@ import 'study_room_page.dart';
 import 'timetable_page.dart';
 import 'todos_page.dart';
 
-/// simple navigation bus so tab pages can jump to other destinations
-/// (the web app uses <Link>; the Flutter shell wires these at startup)
-class AppNav {
-  AppNav._();
-  static final AppNav I = AppNav._();
-  final ValueNotifier<int> tab = ValueNotifier(0);
-  void Function()? openHomework;
-  void Function()? openGrades;
-  void Function()? openAccount;
-}
-
 /// Port of AppShell.tsx for phones: the 7 web destinations split into a
 /// 5-slot bottom bar (Overview · Tasks · Timetable · Calendar · Study Room)
-/// plus Homework/Grades/Account in the top-bar menu.
+/// plus Homework/Grades/Account in the top-bar menu. Navigation flows
+/// through [AppNav] (navigation.dart) so push taps and deeplinks land right.
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
 
@@ -57,33 +49,15 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       if (mounted) setState(() {});
     });
     AppNav.I.openHomework = () => Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => const HomeworkPage()),
+          FadeThroughRoute(page: const HomeworkPage()),
         );
     AppNav.I.openGrades = () => Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => const GradesPage()),
+          FadeThroughRoute(page: const GradesPage()),
         );
     AppNav.I.openAccount = () => AuthSheet.show(context);
-    // tapped pushes land on the page they are about — routes set by the
-    // functions as the message data payload ('timetable' · 'homework' ·
-    // 'calendar'). A route tapped before this init ran is waiting in
-    // PushService.pendingRoute.
-    PushService.onRoute = _handlePushRoute;
-    final pendingRoute = PushService.pendingRoute;
-    if (pendingRoute != null) {
-      PushService.pendingRoute = null;
-      _handlePushRoute(pendingRoute);
-    }
-  }
-
-  void _handlePushRoute(String route) {
-    switch (route) {
-      case 'homework':
-        AppNav.I.openHomework?.call();
-      case 'timetable':
-        AppNav.I.tab.value = 2; // Timetable tab
-      case 'calendar':
-        AppNav.I.tab.value = 3; // Calendar tab
-    }
+    // navigator-backed destinations are wired — queued push/deeplink routes
+    // can now be delivered
+    AppNav.I.markShellReady();
   }
 
   @override
@@ -231,12 +205,14 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           body: PlannerGrid(
             child: IndexedStack(
               index: AppNav.I.tab.value.clamp(0, _tabs.length - 1),
-              children: const [
-                DashboardPage(),
-                TodosPage(),
-                TimetablePage(),
-                CalendarPage(),
-                StudyRoomPage(),
+              children: [
+                // TabFader animates the incoming tab in (fade + slight rise)
+                // while the IndexedStack keeps every page's state alive
+                TabFader(selected: AppNav.I.tab.value == kTabOverview, child: const DashboardPage()),
+                TabFader(selected: AppNav.I.tab.value == kTabTasks, child: const TodosPage()),
+                TabFader(selected: AppNav.I.tab.value == kTabTimetable, child: const TimetablePage()),
+                TabFader(selected: AppNav.I.tab.value == kTabCalendar, child: const CalendarPage()),
+                TabFader(selected: AppNav.I.tab.value == kTabStudy, child: const StudyRoomPage()),
               ],
             ),
           ),

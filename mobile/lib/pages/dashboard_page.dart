@@ -4,9 +4,9 @@ import '../models/types.dart';
 import '../stores/registry.dart';
 import '../theme/app_theme.dart';
 import '../utils/utils.dart';
+import '../navigation.dart';
 import '../widgets/bits.dart';
 import '../widgets/controls.dart';
-import 'shell.dart';
 
 /// Port of the web dashboard (`src/app/page.tsx`).
 

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import 'motion.dart';
 
 /// The web app's component classes from globals.css — `.btn-primary`,
 /// `.btn-ghost`, `.btn-icon`, `.card`, `.label`, and the segmented pill group
@@ -158,18 +159,20 @@ class SemCard extends StatelessWidget {
   final EdgeInsetsGeometry padding;
   final Color? color;
   final Color? borderColor;
+  final VoidCallback? onTap;
   const SemCard({
     super.key,
     required this.child,
     this.padding = EdgeInsets.zero,
     this.color,
     this.borderColor,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
     final sem = context.sem;
-    return Container(
+    final card = Container(
       padding: padding,
       decoration: BoxDecoration(
         color: color ?? sem.card,
@@ -178,6 +181,8 @@ class SemCard extends StatelessWidget {
       ),
       child: child,
     );
+    if (onTap == null) return card;
+    return Pressable(onTap: onTap, child: card);
   }
 }
 

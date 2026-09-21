@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'pages/shell.dart';
+import 'services/links.dart';
 import 'services/push.dart';
 import 'stores/registry.dart';
 import 'theme/app_theme.dart';
@@ -25,6 +26,7 @@ Future<void> main() async {
 
 Future<void> unawaitedStartup() async {
   await PushService.init();
+  await SemesterLinks.init();
 }
 
 class SemesterApp extends StatelessWidget {
