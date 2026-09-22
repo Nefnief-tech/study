@@ -34,6 +34,17 @@ class _UpcomingItem {
         todo = null,
         homework = h,
         sortKey = dueInfo(h.due)?.date.millisecondsSinceEpoch ?? 0x7fffffffffffffff;
+
+  String get title => isHomework ? homework!.title : todo!.title;
+  String? get due => isHomework ? homework!.due : todo!.due;
+  bool get done => isHomework ? homework!.done : todo!.done;
+  void toggle() {
+    if (isHomework) {
+      Stores.I.homework.toggleHomework(homework!.id);
+    } else {
+      Stores.I.todos.toggleTodo(todo!.id);
+    }
+  }
 }
 
 class DashboardPage extends StatelessWidget {
@@ -62,13 +73,8 @@ class DashboardPage extends StatelessWidget {
         final openHomework = homeworks.where((h) => !h.done).toList();
 
         final now = DateTime.now();
-        final weekEnd = now.add(const Duration(days: 7)).millisecondsSinceEpoch;
         final dueToday =
             openTodos.where((t) => dueInfo(t.due)?.isToday ?? false).length;
-        final dueWeek = openTodos
-            .where((t) =>
-                (dueInfo(t.due)?.date.millisecondsSinceEpoch ?? 0x7fffffffffffffff) <= weekEnd)
-            .length;
 
         final overall = weightedAverage(entries);
 
@@ -95,6 +101,13 @@ class DashboardPage extends StatelessWidget {
           if (h.due != null) push(h.due!.substring(0, 10), _ScheduleItem.homework(h));
         }
         final schedule = buckets.keys.toList()..sort();
+
+        // hierarchy: today's reality first, then the queue, the week, numbers
+        final endOfTodayMs = DateTime(now.year, now.month, now.day, 23, 59, 59, 999)
+            .millisecondsSinceEpoch;
+        final todayFocus = upcoming.where((u) => u.sortKey <= endOfTodayMs).toList();
+        final hasOverdue = todayFocus.any((u) => u.sortKey < now.millisecondsSinceEpoch);
+        final restUpcoming = upcoming.skip(todayFocus.length).toList();
 
         final isEmpty = todos.isEmpty && events.isEmpty && subjects.isEmpty;
 
@@ -133,87 +146,35 @@ class DashboardPage extends StatelessWidget {
                   hint: 'Add a subject, a task or a calendar entry to get started.',
                 ),
               ],
+              const SizedBox(height: 20),
+
+              // TODAY — the focus: overdue + due today, concretely
+              _TodayHero(items: todayFocus, hasOverdue: hasOverdue),
               const SizedBox(height: 28),
 
-              // stats
-              GridView.count(
-                crossAxisCount: 2,
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                mainAxisSpacing: 12,
-                crossAxisSpacing: 12,
-                childAspectRatio: 2.7,
-                children: [
-                  _StatCard(
-                    label: 'open tasks',
-                    value: '${openTodos.length}',
-                    onTap: () => AppNav.I.handle('tasks'),
-                  ),
-                  _StatCard(
-                    label: 'due today',
-                    value: '$dueToday',
-                    onTap: () => AppNav.I.handle('tasks'),
-                  ),
-                  _StatCard(
-                    label: 'due this week',
-                    value: '$dueWeek',
-                    onTap: () => AppNav.I.handle('calendar'),
-                  ),
-                  _StatCard(
-                    label: 'homework open',
-                    value: '${openHomework.length}',
-                    onTap: () => AppNav.I.handle('homework'),
-                  ),
-                  _StatCard(
-                    label: 'overall grade',
-                    value: overall == null ? '—' : formatPoints(overall),
-                    onTap: () => AppNav.I.handle('grades'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 32),
-
-              // up next
+              // up next — the queue after today, soonest first
               _SectionHeader(
                 title: 'Up next',
                 actionLabel: 'all tasks →',
                 onAction: () => AppNav.I.handle('tasks'),
               ),
-              if (upcoming.isEmpty)
+              if (restUpcoming.isEmpty && todayFocus.isEmpty)
                 const EmptyState(
                   title: 'All clear',
                   hint: 'No open tasks or homework. Enjoy the calm.',
                 )
+              else if (restUpcoming.isEmpty)
+                Text(
+                  'nothing else queued',
+                  style: Theme.of(context).textTheme.labelSmall!.copyWith(color: sem.inkSoft),
+                )
               else
                 Column(
                   children: [
-                    for (final item in upcoming.take(8))
+                    for (final item in restUpcoming.take(5))
                       _UpcomingRow(item: item),
                   ],
                 ),
-
-              // subject averages
-              if (subjects.isNotEmpty) ...[
-                const SizedBox(height: 32),
-                _SectionHeader(
-                  title: 'Subjects',
-                  actionLabel: 'manage grades →',
-                  onAction: () => AppNav.I.handle('grades'),
-                ),
-                SemCard(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-                  child: Column(
-                    children: [
-                      for (final s in subjects)
-                        _SubjectRow(
-                          subject: s,
-                          avg: weightedAverage(
-                              entries.where((e) => e.subjectId == s.id)),
-                        ),
-                    ],
-                  ),
-                ),
-              ],
 
               // next 7 days
               const SizedBox(height: 32),
@@ -251,6 +212,37 @@ class DashboardPage extends StatelessWidget {
                     ],
                   ],
                 ),
+
+              // numbers — quiet, at the end
+              const SizedBox(height: 32),
+              _SummaryStrip(
+                tasks: openTodos.length,
+                homework: openHomework.length,
+                grade: overall == null ? null : formatPoints(overall),
+              ),
+
+              // subject averages
+              if (subjects.isNotEmpty) ...[
+                const SizedBox(height: 32),
+                _SectionHeader(
+                  title: 'Subjects',
+                  actionLabel: 'manage grades →',
+                  onAction: () => AppNav.I.handle('grades'),
+                ),
+                SemCard(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                  child: Column(
+                    children: [
+                      for (final s in subjects)
+                        _SubjectRow(
+                          subject: s,
+                          avg: weightedAverage(
+                              entries.where((e) => e.subjectId == s.id)),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
 
               // danger zone
               const SizedBox(height: 40),
@@ -294,37 +286,165 @@ class DashboardPage extends StatelessWidget {
 
 /* ---------------- pieces ---------------- */
 
-class _StatCard extends StatelessWidget {
-  final String label;
-  final String value;
-  final VoidCallback onTap;
-  const _StatCard({required this.label, required this.value, required this.onTap});
+/// the dashboard focus: everything due today (or overdue), concretely —
+/// tinted border when attention is needed, calm statement when clear
+class _TodayHero extends StatelessWidget {
+  final List<_UpcomingItem> items;
+  final bool hasOverdue;
+  const _TodayHero({required this.items, required this.hasOverdue});
 
   @override
   Widget build(BuildContext context) {
-    return Pressable(
-      onTap: onTap,
-      child: SemCard(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
+    final stores = Stores.I;
+    final sem = context.sem;
+    final calm = items.isEmpty;
+    final borderColor = calm
+        ? sem.line
+        : hasOverdue
+            ? sem.marker.withValues(alpha: 0.55)
+            : sem.accent.withValues(alpha: 0.5);
+
+    return SemCard(
+      borderColor: borderColor,
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const SemLabel('today'),
+              const Spacer(),
+              if (hasOverdue)
+                Text(
+                  'OVERDUE',
+                  style: Theme.of(context).textTheme.labelSmall!.copyWith(
+                        color: sem.marker,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 1.2,
+                      ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          if (calm)
             Text(
-              label.toUpperCase(),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.labelSmall!.copyWith(
-                    fontSize: 9,
-                    letterSpacing: 1.2,
+              'Nothing due — the desk is calm.',
+              style: Theme.of(context).textTheme.bodyMedium!.copyWith(
+                    color: sem.inkSoft,
+                    fontStyle: FontStyle.italic,
                   ),
             ),
+          for (final item in items.take(3))
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Row(
+                children: [
+                  _RoundCheck(
+                    done: item.done,
+                    size: 20,
+                    onChanged: (_) => item.toggle(),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      item.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium!
+                          .copyWith(fontWeight: FontWeight.w500),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    (dueInfo(item.due)?.label ?? '').toUpperCase(),
+                    style: Theme.of(context).textTheme.labelSmall!.copyWith(
+                          fontSize: 9,
+                          letterSpacing: 0.6,
+                          color: item.sortKey < DateTime.now().millisecondsSinceEpoch
+                              ? sem.marker
+                              : sem.inkSoft,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+          if (items.length > 3)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                '+${items.length - 3} more today',
+                style: Theme.of(context)
+                    .textTheme
+                    .labelSmall!
+                    .copyWith(color: sem.inkSoft),
+              ),
+            ),
+          if (!stores.auth.online) ...[
+            const SizedBox(height: 6),
             Text(
-              value,
-              style: Theme.of(context).textTheme.displaySmall!.copyWith(fontSize: 26),
+              'offline — saved locally',
+              style: Theme.of(context).textTheme.labelSmall!.copyWith(
+                    fontSize: 9,
+                    color: sem.inkSoft.withValues(alpha: 0.7),
+                  ),
             ),
           ],
-        ),
+        ],
+      ),
+    );
+  }
+}
+
+/// the numbers, quiet at the end: one strip instead of five shouty cards
+class _SummaryStrip extends StatelessWidget {
+  final int tasks;
+  final int homework;
+  final String? grade;
+  const _SummaryStrip({required this.tasks, required this.homework, this.grade});
+
+  @override
+  Widget build(BuildContext context) {
+    final sem = context.sem;
+    final cells = [
+      ('tasks', '$tasks', 'tasks'),
+      ('homework', '$homework', 'homework'),
+      ('grade', grade ?? '—', 'grades'),
+    ];
+    return SemCard(
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      child: Row(
+        children: [
+          for (var i = 0; i < cells.length; i++) ...[
+            if (i > 0) Container(width: 1, height: 30, color: sem.line),
+            Expanded(
+              child: Pressable(
+                onTap: () => AppNav.I.handle(cells[i].$3),
+                child: Column(
+                  children: [
+                    Text(
+                      cells[i].$2,
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium!
+                          .copyWith(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      cells[i].$1.toUpperCase(),
+                      style: Theme.of(context).textTheme.labelSmall!.copyWith(
+                            fontSize: 8,
+                            letterSpacing: 1.2,
+                            color: sem.inkSoft,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }

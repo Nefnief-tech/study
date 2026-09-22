@@ -320,8 +320,10 @@ class PlannerGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final sem = context.sem;
+    // painter (NOT foregroundPainter): the dots must sit behind the content —
+    // in the foreground they floated over every card and line of text
     return CustomPaint(
-      foregroundPainter: _DotGridPainter(color: sem.grid, spacing: 22),
+      painter: _DotGridPainter(color: sem.grid, spacing: 22),
       child: child,
     );
   }
