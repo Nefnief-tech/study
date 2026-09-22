@@ -51,3 +51,4 @@ test-artifacts/
 
 # mimosa security-scan working state
 .mimosa/
+shots/
