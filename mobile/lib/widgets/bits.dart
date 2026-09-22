@@ -225,7 +225,7 @@ class EmptyState extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 44),
         decoration: BoxDecoration(
           color: sem.card.withValues(alpha: 0.6),
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(20),
         ),
         child: Column(
           children: [

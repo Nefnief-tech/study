@@ -221,56 +221,61 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                 ],
               ),
             ),
-            bottomNavigationBar: Container(
-              decoration: BoxDecoration(
-                color: sem.paper.withValues(alpha: 0.97),
-                border: Border(top: BorderSide(color: sem.line)),
+            bottomNavigationBar: ClipRRect(
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(18),
               ),
-              child: SafeArea(
-                top: false,
-                child: Row(
-                  children: [
-                    for (var i = 0; i < _tabs.length; i++)
-                      Expanded(
-                        child: InkWell(
-                          onTap: () => _goTab(i),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 8),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  i == _currentTab ? _tabs[i].$3 : _tabs[i].$2,
-                                  size: 21,
-                                  color: i == _currentTab
-                                      ? sem.accent
-                                      : sem.inkSoft,
-                                ),
-                                const SizedBox(height: 3),
-                                Text(
-                                  _tabs[i].$1,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .labelSmall!
-                                      .copyWith(
-                                        fontSize: 9,
-                                        letterSpacing: 0.2,
-                                        fontWeight: i == _currentTab
-                                            ? FontWeight.w600
-                                            : FontWeight.w400,
-                                        color: i == _currentTab
-                                            ? sem.accent
-                                            : sem.inkSoft,
-                                      ),
-                                ),
-                              ],
+              child: Container(
+                decoration: BoxDecoration(
+                  color: sem.paper.withValues(alpha: 0.97),
+                  border: Border(top: BorderSide(color: sem.line)),
+                ),
+                child: SafeArea(
+                  top: false,
+                  child: Row(
+                    children: [
+                      for (var i = 0; i < _tabs.length; i++)
+                        Expanded(
+                          child: InkWell(
+                            onTap: () => _goTab(i),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    i == _currentTab ? _tabs[i].$3 : _tabs[i].$2,
+                                    size: 21,
+                                    color: i == _currentTab
+                                        ? sem.accent
+                                        : sem.inkSoft,
+                                  ),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    _tabs[i].$1,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelSmall!
+                                        .copyWith(
+                                          fontSize: 9,
+                                          letterSpacing: 0.2,
+                                          fontWeight: i == _currentTab
+                                              ? FontWeight.w600
+                                              : FontWeight.w400,
+                                          color: i == _currentTab
+                                              ? sem.accent
+                                              : sem.inkSoft,
+                                        ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),

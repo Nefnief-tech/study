@@ -26,7 +26,7 @@ class SemPrimaryButton extends StatelessWidget {
         disabledForegroundColor: sem.paper.withValues(alpha: 0.8),
         elevation: 0,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         textStyle: Theme.of(context)
             .textTheme
             .bodyMedium!
@@ -61,7 +61,7 @@ class SemGhostButton extends StatelessWidget {
         disabledForegroundColor: sem.inkSoft,
         side: BorderSide(color: border ?? sem.line),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         textStyle: Theme.of(context).textTheme.bodyMedium!.copyWith(fontWeight: FontWeight.w400),
       ),
       child: child,
@@ -121,7 +121,7 @@ class SegToggle<T> extends StatelessWidget {
       decoration: BoxDecoration(
         color: sem.card,
         border: Border.all(color: sem.line),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(14),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -129,12 +129,12 @@ class SegToggle<T> extends StatelessWidget {
           for (final (value, label) in options)
             InkWell(
               onTap: () => onChanged(value),
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(10),
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
                   color: value == selected ? sem.ink : Colors.transparent,
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(10),
                 ),
                 child: Text(
                   label.toUpperCase(),
@@ -177,7 +177,7 @@ class SemCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: color ?? sem.card,
         border: Border.all(color: borderColor ?? sem.line),
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(20),
       ),
       child: child,
     );
@@ -265,7 +265,7 @@ Future<T?> showSemSheet<T>({
     isDismissible: isDismissible,
     enableDrag: isDismissible,
     shape: RoundedRectangleBorder(
-      borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
       side: BorderSide(color: sem.line),
     ),
     builder: (sheetContext) {
