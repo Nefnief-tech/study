@@ -8,19 +8,23 @@ import '../services/push.dart';
 import '../stores/registry.dart';
 import '../theme/app_theme.dart';
 import '../widgets/controls.dart';
+import '../widgets/motion.dart';
 import 'calendar_page.dart';
 import 'dashboard_page.dart';
 import 'grades_page.dart';
 import 'homework_page.dart';
+import 'more_page.dart';
 import 'settings_page.dart';
 import 'study_room_page.dart';
 import 'timetable_page.dart';
 import 'todos_page.dart';
 
-/// Port of AppShell.tsx for phones: every destination is a tab in the bottom
-/// bar, tabs are swipeable (PageView) and the system back gesture walks back
-/// through tab history instead of leaving the app. Navigation flows through
-/// [AppNav] (navigation.dart) so push taps and deeplinks land right.
+/// Port of AppShell.tsx for phones: five main tabs (Overview · Tasks ·
+/// Homework · Timetable · More) — swipeable, with the system back gesture
+/// walking back through tab history. The More tab holds Calendar, Grades,
+/// Study Room and Settings as pushed pages, so back pops them naturally.
+/// Navigation flows through [AppNav] (navigation.dart) so push taps and
+/// deeplinks land right.
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
 
@@ -34,10 +38,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     ('Tasks', Icons.checklist_outlined, Icons.checklist),
     ('Homework', Icons.menu_book_outlined, Icons.menu_book),
     ('Timetable', Icons.table_chart_outlined, Icons.table_chart),
-    ('Calendar', Icons.calendar_month_outlined, Icons.calendar_month),
-    ('Grades', Icons.calculate_outlined, Icons.calculate),
-    ('Study Room', Icons.auto_awesome_outlined, Icons.auto_awesome),
-    ('Settings', Icons.settings_outlined, Icons.settings),
+    ('More', Icons.apps_outlined, Icons.apps),
   ];
 
   final PageController _swipe = PageController();
@@ -52,6 +53,15 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     SemesterApi.refreshDocuments();
     PushService.init();
     AppNav.I.tab.addListener(_onTabChanged);
+    // Navigator lookups are illegal in initState — wire after the first frame
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      AppNav.I.openCalendar = () => _pushPage('Calendar', const CalendarPage());
+      AppNav.I.openGrades = () => _pushPage('Grades', const GradesPage());
+      AppNav.I.openStudy = () => _pushPage('Study Room', const StudyRoomPage());
+      AppNav.I.openSettings = () => _pushPage('Settings', const SettingsPage());
+      AppNav.I.markShellReady();
+    });
   }
 
   @override
@@ -60,6 +70,30 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     _swipe.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  void _pushPage(String title, Widget page) {
+    final line = context.sem.line;
+    Navigator.of(context).push(
+      FadeThroughRoute(
+        page: Scaffold(
+          appBar: AppBar(
+            title: Text(
+              title,
+              style: Theme.of(context)
+                  .textTheme
+                  .headlineSmall!
+                  .copyWith(fontSize: 18),
+            ),
+            bottom: PreferredSize(
+              preferredSize: const Size.fromHeight(1),
+              child: Container(height: 1, color: line),
+            ),
+          ),
+          body: PlannerGrid(child: page),
+        ),
+      ),
+    );
   }
 
   /// single sync point: whatever sets AppNav.I.tab (bottom-bar tap, swipe,
@@ -108,7 +142,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     final sem = context.sem;
     return PopScope(
       // the system back gesture (edge swipe) walks back through tab history
-      // instead of leaving the app; at the root it exits
+      // instead of leaving the app; at the root it exits. Pushed More-pages
+      // pop on their own route before this ever fires.
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
@@ -182,10 +217,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                   _KeepAlive(TodosPage()),
                   _KeepAlive(HomeworkPage()),
                   _KeepAlive(TimetablePage()),
-                  _KeepAlive(CalendarPage()),
-                  _KeepAlive(GradesPage()),
-                  _KeepAlive(StudyRoomPage()),
-                  _KeepAlive(SettingsPage()),
+                  _KeepAlive(MorePage()),
                 ],
               ),
             ),
@@ -209,31 +241,29 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                               children: [
                                 Icon(
                                   i == _currentTab ? _tabs[i].$3 : _tabs[i].$2,
-                                  size: 20,
+                                  size: 21,
                                   color: i == _currentTab
                                       ? sem.accent
                                       : sem.inkSoft,
                                 ),
-                                const SizedBox(height: 2),
-                                FittedBox(
-                                  fit: BoxFit.scaleDown,
-                                  child: Text(
-                                    _tabs[i].$1,
-                                    maxLines: 1,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .labelSmall!
-                                        .copyWith(
-                                          fontSize: 8,
-                                          letterSpacing: 0.2,
-                                          fontWeight: i == _currentTab
-                                              ? FontWeight.w600
-                                              : FontWeight.w400,
-                                          color: i == _currentTab
-                                              ? sem.accent
-                                              : sem.inkSoft,
-                                        ),
-                                  ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  _tabs[i].$1,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelSmall!
+                                      .copyWith(
+                                        fontSize: 9,
+                                        letterSpacing: 0.2,
+                                        fontWeight: i == _currentTab
+                                            ? FontWeight.w600
+                                            : FontWeight.w400,
+                                        color: i == _currentTab
+                                            ? sem.accent
+                                            : sem.inkSoft,
+                                      ),
                                 ),
                               ],
                             ),

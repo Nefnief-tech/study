@@ -8,6 +8,31 @@ const Duration kMotionFast = Duration(milliseconds: 150);
 const Duration kMotionBase = Duration(milliseconds: 240);
 const Curve kMotionCurve = Curves.easeOutCubic;
 
+/// page transition for pushed pages (More-tab destinations): content fades
+/// in while sliding up a couple of pixels — pairs with the system back
+/// gesture, which pops these routes naturally
+class FadeThroughRoute<T> extends PageRouteBuilder<T> {
+  FadeThroughRoute({required Widget page})
+      : super(
+          transitionDuration: kMotionBase,
+          reverseTransitionDuration: kMotionFast,
+          pageBuilder: (_, _, _) => page,
+          transitionsBuilder: (_, animation, _, child) {
+            final t = CurvedAnimation(parent: animation, curve: kMotionCurve);
+            return FadeTransition(
+              opacity: t,
+              child: SlideTransition(
+                position: Tween(
+                  begin: const Offset(0, 0.02),
+                  end: Offset.zero,
+                ).animate(t),
+                child: child,
+              ),
+            );
+          },
+        );
+}
+
 /// subtle press feedback: scales to 0.98 while pressed, springs back on
 /// release — wrap any tappable card or tile
 class Pressable extends StatefulWidget {
