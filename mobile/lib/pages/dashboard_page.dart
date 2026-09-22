@@ -7,6 +7,7 @@ import '../utils/utils.dart';
 import '../navigation.dart';
 import '../widgets/bits.dart';
 import '../widgets/controls.dart';
+import '../widgets/motion.dart';
 
 /// Port of the web dashboard (`src/app/page.tsx`).
 
@@ -146,27 +147,27 @@ class DashboardPage extends StatelessWidget {
                   _StatCard(
                     label: 'open tasks',
                     value: '${openTodos.length}',
-                    onTap: () => AppNav.I.tab.value = 1,
+                    onTap: () => AppNav.I.handle('tasks'),
                   ),
                   _StatCard(
                     label: 'due today',
                     value: '$dueToday',
-                    onTap: () => AppNav.I.tab.value = 1,
+                    onTap: () => AppNav.I.handle('tasks'),
                   ),
                   _StatCard(
                     label: 'due this week',
                     value: '$dueWeek',
-                    onTap: () => AppNav.I.tab.value = 3,
+                    onTap: () => AppNav.I.handle('calendar'),
                   ),
                   _StatCard(
                     label: 'homework open',
                     value: '${openHomework.length}',
-                    onTap: () => AppNav.I.openHomework?.call(),
+                    onTap: () => AppNav.I.handle('homework'),
                   ),
                   _StatCard(
                     label: 'overall grade',
                     value: overall == null ? '—' : formatPoints(overall),
-                    onTap: () => AppNav.I.openGrades?.call(),
+                    onTap: () => AppNav.I.handle('grades'),
                   ),
                 ],
               ),
@@ -176,7 +177,7 @@ class DashboardPage extends StatelessWidget {
               _SectionHeader(
                 title: 'Up next',
                 actionLabel: 'all tasks →',
-                onAction: () => AppNav.I.tab.value = 1,
+                onAction: () => AppNav.I.handle('tasks'),
               ),
               if (upcoming.isEmpty)
                 const EmptyState(
@@ -197,7 +198,7 @@ class DashboardPage extends StatelessWidget {
                 _SectionHeader(
                   title: 'Subjects',
                   actionLabel: 'manage grades →',
-                  onAction: () => AppNav.I.openGrades?.call(),
+                  onAction: () => AppNav.I.handle('grades'),
                 ),
                 SemCard(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
@@ -219,7 +220,7 @@ class DashboardPage extends StatelessWidget {
               _SectionHeader(
                 title: 'Next 7 days',
                 actionLabel: 'calendar →',
-                onAction: () => AppNav.I.tab.value = 3,
+                onAction: () => AppNav.I.handle('calendar'),
               ),
               if (schedule.isEmpty)
                 const EmptyState(
@@ -301,9 +302,8 @@ class _StatCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
+    return Pressable(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
       child: SemCard(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         child: Column(

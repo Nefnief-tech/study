@@ -1,27 +1,26 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../appwrite/sync.dart';
 import '../navigation.dart';
 import '../services/api.dart';
 import '../services/push.dart';
-import '../stores/auth_store.dart' show SyncStatus;
 import '../stores/registry.dart';
 import '../theme/app_theme.dart';
-import '../widgets/auth_sheet.dart';
 import '../widgets/controls.dart';
-import '../widgets/motion.dart';
 import 'calendar_page.dart';
 import 'dashboard_page.dart';
 import 'grades_page.dart';
 import 'homework_page.dart';
+import 'settings_page.dart';
 import 'study_room_page.dart';
 import 'timetable_page.dart';
 import 'todos_page.dart';
 
-/// Port of AppShell.tsx for phones: the 7 web destinations split into a
-/// 5-slot bottom bar (Overview · Tasks · Timetable · Calendar · Study Room)
-/// plus Homework/Grades/Account in the top-bar menu. Navigation flows
-/// through [AppNav] (navigation.dart) so push taps and deeplinks land right.
+/// Port of AppShell.tsx for phones: every destination is a tab in the bottom
+/// bar, tabs are swipeable (PageView) and the system back gesture walks back
+/// through tab history instead of leaving the app. Navigation flows through
+/// [AppNav] (navigation.dart) so push taps and deeplinks land right.
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
 
@@ -33,10 +32,17 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   static const _tabs = [
     ('Overview', Icons.dashboard_outlined, Icons.dashboard),
     ('Tasks', Icons.checklist_outlined, Icons.checklist),
+    ('Homework', Icons.menu_book_outlined, Icons.menu_book),
     ('Timetable', Icons.table_chart_outlined, Icons.table_chart),
     ('Calendar', Icons.calendar_month_outlined, Icons.calendar_month),
+    ('Grades', Icons.calculate_outlined, Icons.calculate),
     ('Study Room', Icons.auto_awesome_outlined, Icons.auto_awesome),
+    ('Settings', Icons.settings_outlined, Icons.settings),
   ];
+
+  final PageController _swipe = PageController();
+  int _currentTab = kTabOverview;
+  final List<int> _tabHistory = [];
 
   @override
   void initState() {
@@ -45,26 +51,37 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     initSync();
     SemesterApi.refreshDocuments();
     PushService.init();
-    AppNav.I.tab.addListener(() {
-      if (mounted) setState(() {});
-    });
-    AppNav.I.openHomework = () => Navigator.of(context).push(
-          FadeThroughRoute(page: const HomeworkPage()),
-        );
-    AppNav.I.openGrades = () => Navigator.of(context).push(
-          FadeThroughRoute(page: const GradesPage()),
-        );
-    AppNav.I.openAccount = () => AuthSheet.show(context);
-    // navigator-backed destinations are wired — queued push/deeplink routes
-    // can now be delivered
-    AppNav.I.markShellReady();
+    AppNav.I.tab.addListener(_onTabChanged);
   }
 
   @override
   void dispose() {
+    AppNav.I.tab.removeListener(_onTabChanged);
+    _swipe.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
+
+  /// single sync point: whatever sets AppNav.I.tab (bottom-bar tap, swipe,
+  /// push payload, deeplink) ends up here — the PageView follows along and
+  /// the previous tab is remembered for the system back gesture
+  void _onTabChanged() {
+    final next = AppNav.I.tab.value.clamp(0, _tabs.length - 1);
+    if (next == _currentTab) return;
+    _tabHistory.add(_currentTab);
+    if (_tabHistory.length > 16) _tabHistory.removeAt(0);
+    _currentTab = next;
+    if (_swipe.hasClients && (_swipe.page?.round() ?? next) != next) {
+      _swipe.animateToPage(
+        next,
+        duration: const Duration(milliseconds: 240),
+        curve: Curves.easeOutCubic,
+      );
+    }
+    setState(() {});
+  }
+
+  void _goTab(int index) => AppNav.I.tab.value = index;
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -76,8 +93,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   }
 
   String get _currentLabel {
-    if (AppNav.I.tab.value >= _tabs.length) return 'Overview';
-    return _tabs[AppNav.I.tab.value].$1;
+    if (_currentTab >= _tabs.length) return _tabs.first.$1;
+    return _tabs[_currentTab].$1;
   }
 
   void _toggleTheme(BuildContext context) {
@@ -89,181 +106,169 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final sem = context.sem;
-    return ListenableBuilder(
-      listenable: Listenable.merge([Stores.I.auth, Stores.I.theme]),
-      builder: (context, _) {
-        final auth = Stores.I.auth;
-        return Scaffold(
-          backgroundColor: sem.paper,
-          appBar: AppBar(
-            title: GestureDetector(
-              onTap: () => AppNav.I.tab.value = 0,
-              child: RichText(
-                text: TextSpan(
-                  style: Theme.of(context)
-                      .textTheme
-                      .headlineSmall!
-                      .copyWith(fontSize: 20),
+    return PopScope(
+      // the system back gesture (edge swipe) walks back through tab history
+      // instead of leaving the app; at the root it exits
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (_tabHistory.isNotEmpty) {
+          final previous = _tabHistory.removeLast();
+          AppNav.I.tab.value = previous;
+        } else if (_currentTab != kTabOverview) {
+          AppNav.I.tab.value = kTabOverview;
+        } else {
+          SystemNavigator.pop();
+        }
+      },
+      child: ListenableBuilder(
+        listenable: Stores.I.theme,
+        builder: (context, _) {
+          return Scaffold(
+            backgroundColor: sem.paper,
+            appBar: AppBar(
+              title: GestureDetector(
+                onTap: () => _goTab(kTabOverview),
+                child: RichText(
+                  text: TextSpan(
+                    style: Theme.of(context)
+                        .textTheme
+                        .headlineSmall!
+                        .copyWith(fontSize: 20),
+                    children: [
+                      const TextSpan(text: 'Semester'),
+                      TextSpan(text: '.', style: TextStyle(color: sem.accent)),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: Center(
+                    child: Text(
+                      _currentLabel.toUpperCase(),
+                      style: Theme.of(context).textTheme.labelSmall!.copyWith(
+                            letterSpacing: 1.4,
+                          ),
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Toggle dark mode',
+                  icon: Icon(
+                    (Stores.I.theme.dark ??
+                            MediaQuery.platformBrightnessOf(context) == Brightness.dark)
+                        ? Icons.light_mode_outlined
+                        : Icons.dark_mode_outlined,
+                    size: 19,
+                    color: sem.inkSoft,
+                  ),
+                  onPressed: () => _toggleTheme(context),
+                ),
+                const SizedBox(width: 8),
+              ],
+              bottom: PreferredSize(
+                preferredSize: const Size.fromHeight(1),
+                child: Container(height: 1, color: sem.line),
+              ),
+            ),
+            body: PlannerGrid(
+              child: PageView(
+                controller: _swipe,
+                onPageChanged: (i) => AppNav.I.tab.value = i,
+                children: const [
+                  _KeepAlive(DashboardPage()),
+                  _KeepAlive(TodosPage()),
+                  _KeepAlive(HomeworkPage()),
+                  _KeepAlive(TimetablePage()),
+                  _KeepAlive(CalendarPage()),
+                  _KeepAlive(GradesPage()),
+                  _KeepAlive(StudyRoomPage()),
+                  _KeepAlive(SettingsPage()),
+                ],
+              ),
+            ),
+            bottomNavigationBar: Container(
+              decoration: BoxDecoration(
+                color: sem.paper.withValues(alpha: 0.97),
+                border: Border(top: BorderSide(color: sem.line)),
+              ),
+              child: SafeArea(
+                top: false,
+                child: Row(
                   children: [
-                    const TextSpan(text: 'Semester'),
-                    TextSpan(text: '.', style: TextStyle(color: sem.accent)),
+                    for (var i = 0; i < _tabs.length; i++)
+                      Expanded(
+                        child: InkWell(
+                          onTap: () => _goTab(i),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  i == _currentTab ? _tabs[i].$3 : _tabs[i].$2,
+                                  size: 20,
+                                  color: i == _currentTab
+                                      ? sem.accent
+                                      : sem.inkSoft,
+                                ),
+                                const SizedBox(height: 2),
+                                FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: Text(
+                                    _tabs[i].$1,
+                                    maxLines: 1,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelSmall!
+                                        .copyWith(
+                                          fontSize: 8,
+                                          letterSpacing: 0.2,
+                                          fontWeight: i == _currentTab
+                                              ? FontWeight.w600
+                                              : FontWeight.w400,
+                                          color: i == _currentTab
+                                              ? sem.accent
+                                              : sem.inkSoft,
+                                        ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
             ),
-            actions: [
-              Padding(
-                padding: const EdgeInsets.only(right: 4),
-                child: Center(
-                  child: Text(
-                    _currentLabel.toUpperCase(),
-                    style: Theme.of(context).textTheme.labelSmall!.copyWith(
-                          letterSpacing: 1.4,
-                        ),
-                  ),
-                ),
-              ),
-              IconButton(
-                tooltip: 'Account',
-                icon: Badge(
-                  isLabelVisible: auth.status == SyncStatus.signedIn,
-                  smallSize: 6,
-                  alignment: Alignment.topRight,
-                  backgroundColor:
-                      auth.syncing || auth.syncError != null ? sem.marker : sem.accent,
-                  child: Icon(
-                    Icons.person_outline,
-                    size: 20,
-                    color: auth.status == SyncStatus.signedIn ? sem.accent : sem.inkSoft,
-                  ),
-                ),
-                onPressed: () => AuthSheet.show(context),
-              ),
-              IconButton(
-                tooltip: 'Toggle dark mode',
-                icon: Icon(
-                  (Stores.I.theme.dark ??
-                          MediaQuery.platformBrightnessOf(context) == Brightness.dark)
-                      ? Icons.light_mode_outlined
-                      : Icons.dark_mode_outlined,
-                  size: 19,
-                  color: sem.inkSoft,
-                ),
-                onPressed: () => _toggleTheme(context),
-              ),
-              PopupMenuButton<String>(
-                tooltip: 'More',
-                icon: Icon(Icons.more_vert, size: 20, color: sem.inkSoft),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  side: BorderSide(color: sem.line),
-                ),
-                onSelected: (value) {
-                  switch (value) {
-                    case 'homework':
-                      AppNav.I.openHomework?.call();
-                    case 'grades':
-                      AppNav.I.openGrades?.call();
-                    case 'account':
-                      AuthSheet.show(context);
-                  }
-                },
-                itemBuilder: (_) => [
-                  const PopupMenuItem(
-                    value: 'homework',
-                    child: Row(children: [
-                      Icon(Icons.menu_book_outlined, size: 18),
-                      SizedBox(width: 10),
-                      Text('Homework'),
-                    ]),
-                  ),
-                  const PopupMenuItem(
-                    value: 'grades',
-                    child: Row(children: [
-                      Icon(Icons.calculate_outlined, size: 18),
-                      SizedBox(width: 10),
-                      Text('Grades'),
-                    ]),
-                  ),
-                  const PopupMenuItem(
-                    value: 'account',
-                    child: Row(children: [
-                      Icon(Icons.person_outline, size: 18),
-                      SizedBox(width: 10),
-                      Text('Account & sync'),
-                    ]),
-                  ),
-                ],
-              ),
-              const SizedBox(width: 4),
-            ],
-            bottom: PreferredSize(
-              preferredSize: const Size.fromHeight(1),
-              child: Container(height: 1, color: sem.line),
-            ),
-          ),
-          body: PlannerGrid(
-            child: IndexedStack(
-              index: AppNav.I.tab.value.clamp(0, _tabs.length - 1),
-              children: [
-                // TabFader animates the incoming tab in (fade + slight rise)
-                // while the IndexedStack keeps every page's state alive
-                TabFader(selected: AppNav.I.tab.value == kTabOverview, child: const DashboardPage()),
-                TabFader(selected: AppNav.I.tab.value == kTabTasks, child: const TodosPage()),
-                TabFader(selected: AppNav.I.tab.value == kTabTimetable, child: const TimetablePage()),
-                TabFader(selected: AppNav.I.tab.value == kTabCalendar, child: const CalendarPage()),
-                TabFader(selected: AppNav.I.tab.value == kTabStudy, child: const StudyRoomPage()),
-              ],
-            ),
-          ),
-          bottomNavigationBar: Container(
-            decoration: BoxDecoration(
-              color: sem.paper.withValues(alpha: 0.97),
-              border: Border(top: BorderSide(color: sem.line)),
-            ),
-            child: SafeArea(
-              top: false,
-              child: Row(
-                children: [
-                  for (var i = 0; i < _tabs.length; i++)
-                    Expanded(
-                      child: InkWell(
-                        onTap: () => AppNav.I.tab.value = i,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 8),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                i == AppNav.I.tab.value ? _tabs[i].$3 : _tabs[i].$2,
-                                size: 21,
-                                color: i == AppNav.I.tab.value ? sem.accent : sem.inkSoft,
-                              ),
-                              const SizedBox(height: 3),
-                              Text(
-                                _tabs[i].$1.split(' ')[0],
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodySmall!
-                                    .copyWith(
-                                      fontSize: 10,
-                                      height: 1.1,
-                                      fontWeight:
-                                          i == AppNav.I.tab.value ? FontWeight.w600 : FontWeight.w400,
-                                      color: i == AppNav.I.tab.value ? sem.accent : sem.inkSoft,
-                                    ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
+  }
+}
+
+/// keeps a PageView page's state (scroll positions, controllers) alive once
+/// it has been built — swiping far away and back must not reset a page
+class _KeepAlive extends StatefulWidget {
+  final Widget child;
+  const _KeepAlive(this.child);
+
+  @override
+  State<_KeepAlive> createState() => _KeepAliveState();
+}
+
+class _KeepAliveState extends State<_KeepAlive>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return widget.child;
   }
 }

@@ -25,6 +25,21 @@ class AuthSheet extends StatefulWidget {
 }
 
 class _AuthSheetState extends State<AuthSheet> {
+  @override
+  Widget build(BuildContext context) => const AuthPanel();
+}
+
+/// The full account surface — sign-in/-up, MFA sign-in step, verification,
+/// 2FA setup, sync, push status — embedded by the Settings tab and wrapped
+/// by the [AuthSheet] bottom sheet.
+class AuthPanel extends StatefulWidget {
+  const AuthPanel({super.key});
+
+  @override
+  State<AuthPanel> createState() => _AuthPanelState();
+}
+
+class _AuthPanelState extends State<AuthPanel> {
   bool _register = false;
   bool _recovery = false;
   bool _recoveryBusy = false;
