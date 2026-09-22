@@ -36,7 +36,9 @@ edits live locally first and win over the cloud until their push lands.
 | 📅 **Calendar** | Month + week views that combine events, exams, deadlines *and* task due dates |
 | 🤖 **AI Study Room** | Upload PDF/DOCX/PPTX/TXT/MD → text is extracted server-side, flashcard decks are generated, and chat answers are grounded in your documents with source citations |
 | 🌓 **Light & dark** | Stationery-palette design (Fraunces · Instrument Sans · IBM Plex Mono) with a no-flash theme toggle |
-| 🔔 **Daily digest** | An Appwrite Function pushes tomorrow's classes (with substitutions), overdue homework and upcoming exams every afternoon |
+| 🔔 **Push digests** | Appwrite Functions: morning/afternoon/evening digests (classes with substitutions, due work, week ahead), homework updates at 15:00 & 20:00, a Sunday week-ahead — and failure alerts if a run breaks |
+| 📱 **Home-screen widgets** | Native Android widgets — *Up next* (homework · tasks · exams) and *Today's timetable* — dark/light aware, tap to open the app |
+| 🧭 **Mobile navigation** | Five swipeable tabs + More, system back walks tab history, push taps and `semester://` deeplinks land on the right page |
 
 ## How the sync works
 
@@ -123,6 +125,9 @@ flutter run          # or: flutter build apk --release --target-platform android
 Point the app at your endpoint/project in `lib/appwrite/client.dart` (defaults match the
 web app) and at the deployed web server in the account sheet — the phone reuses it for AI
 and the school portal, so keys and credentials stay server-side.
+
+Home-screen widgets: open **Settings → Home-screen widgets** and pin *Up next* or
+*Timetable* — they follow your data automatically (dark/light aware).
 
 ## Deployment
 

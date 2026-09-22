@@ -5,6 +5,7 @@ import '../appwrite/sync.dart';
 import '../navigation.dart';
 import '../services/api.dart';
 import '../services/push.dart';
+import '../services/widgets.dart';
 import '../stores/registry.dart';
 import '../theme/app_theme.dart';
 import '../widgets/controls.dart';
@@ -52,6 +53,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     initSync();
     SemesterApi.refreshDocuments();
     PushService.init();
+    // home-screen widgets follow the stores (agenda + today's timetable)
+    SemesterWidgets.init();
     AppNav.I.tab.addListener(_onTabChanged);
     // Navigator lookups are illegal in initState — wire after the first frame
     WidgetsBinding.instance.addPostFrameCallback((_) {

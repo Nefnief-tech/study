@@ -38,6 +38,29 @@
                 <data android:scheme="semester"/>
             </intent-filter>
         </activity>
+        <!-- home-screen widgets: data payloads come from the app via home_widget -->
+        <receiver
+            android:name=".widgets.AgendaWidgetProvider"
+            android:exported="false"
+            android:label="Semester — Up next">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/agenda_widget_info"/>
+        </receiver>
+        <receiver
+            android:name=".widgets.TimetableWidgetProvider"
+            android:exported="false"
+            android:label="Semester — Timetable">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/timetable_widget_info"/>
+        </receiver>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
