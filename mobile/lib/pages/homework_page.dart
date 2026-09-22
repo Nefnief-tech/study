@@ -40,28 +40,7 @@ class _HomeworkPageState extends State<HomeworkPage> {
   @override
   Widget build(BuildContext context) {
     final stores = Stores.I;
-    return Scaffold(
-      backgroundColor: context.sem.paper,
-      appBar: AppBar(
-        title: const Text('Homework'),
-        actions: [
-          SemIconButton(
-            icon: Icons.add,
-            onPressed: () => _openForm(),
-            color: context.sem.ink,
-          ),
-          const SizedBox(width: 6),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _openForm(),
-        backgroundColor: context.sem.ink,
-        foregroundColor: context.sem.paper,
-        elevation: 0,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        child: const Icon(Icons.add),
-      ),
-      body: PlannerGrid(
+    return PlannerGrid(
         child: ListenableBuilder(
           listenable: Listenable.merge([stores.homework, stores.subjects]),
           builder: (context, _) {
@@ -95,9 +74,14 @@ class _HomeworkPageState extends State<HomeworkPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        '$openCount open · ${homeworks.length - openCount} done',
-                        style: Theme.of(context).textTheme.labelMedium!.copyWith(fontSize: 12),
+                      PageHeader(
+                        title: 'Homework',
+                        subtitle: '$openCount open · ${homeworks.length - openCount} done',
+                        trailing: SemIconButton(
+                          icon: Icons.add,
+                          onPressed: () => _openForm(),
+                          color: context.sem.ink,
+                        ),
                       ),
                       const SizedBox(height: 12),
                       Row(
@@ -221,7 +205,6 @@ class _HomeworkPageState extends State<HomeworkPage> {
             );
           },
         ),
-      ),
     );
   }
 

@@ -23,7 +23,6 @@ class GradesPage extends StatelessWidget {
     final stores = Stores.I;
     return Scaffold(
       backgroundColor: context.sem.paper,
-      appBar: AppBar(title: const Text('Grades')),
       body: PlannerGrid(
         child: ListenableBuilder(
           listenable: Listenable.merge([stores.subjects, stores.grades]),

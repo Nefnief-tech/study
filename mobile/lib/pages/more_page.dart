@@ -34,20 +34,22 @@ class MorePage extends StatelessWidget {
             padding: const EdgeInsets.symmetric(vertical: 4),
             child: Column(
               children: [
-                for (final (icon, title, subtitle, route) in items)
+                for (var i = 0; i < items.length; i++) ...[
+                  if (i > 0)
+                    Divider(height: 1, indent: 56, color: sem.line),
                   Pressable(
-                    onTap: () => AppNav.I.handle(route),
+                    onTap: () => AppNav.I.handle(items[i].$4),
                     child: ListTile(
-                      leading: Icon(icon, size: 22, color: sem.accent),
+                      leading: Icon(items[i].$1, size: 22, color: sem.accent),
                       title: Text(
-                        title,
+                        items[i].$2,
                         style: Theme.of(context)
                             .textTheme
                             .bodyLarge!
                             .copyWith(fontWeight: FontWeight.w500),
                       ),
                       subtitle: Text(
-                        subtitle,
+                        items[i].$3,
                         style: Theme.of(context)
                             .textTheme
                             .labelSmall!
@@ -57,6 +59,7 @@ class MorePage extends StatelessWidget {
                           size: 18, color: sem.inkSoft),
                     ),
                   ),
+                ],
               ],
             ),
           ),

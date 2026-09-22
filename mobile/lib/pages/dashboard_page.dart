@@ -142,7 +142,7 @@ class DashboardPage extends StatelessWidget {
                 physics: const NeverScrollableScrollPhysics(),
                 mainAxisSpacing: 12,
                 crossAxisSpacing: 12,
-                childAspectRatio: 1.9,
+                childAspectRatio: 2.7,
                 children: [
                   _StatCard(
                     label: 'open tasks',
