@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo } from "react";
 import { addDays, format } from "date-fns";
-import { ArrowRight, BookOpen, Check, Sparkles, Trash2 } from "lucide-react";
+import { BookOpen, Check, Sparkles, Trash2 } from "lucide-react";
 import { useTodosStore } from "@/lib/store/todos";
 import { useEventsStore } from "@/lib/store/events";
 import { useSubjectsStore } from "@/lib/store/subjects";
@@ -120,18 +120,34 @@ export default function DashboardPage() {
     [subjects, entries],
   );
 
+  // hierarchy: today's reality first, then the queue, the week, numbers
+  const { todayFocus, hasOverdue, restUpcoming } = useMemo(() => {
+    const nowMs = new Date().getTime();
+    const end = new Date(nowMs);
+    end.setHours(23, 59, 59, 999);
+    const endMs = end.getTime();
+    const focus = upcoming
+      .filter((u) => u.sort <= endMs)
+      .map((u) => ({ ...u, overdue: u.sort < nowMs }));
+    return {
+      todayFocus: focus,
+      hasOverdue: focus.some((u) => u.overdue),
+      restUpcoming: upcoming.slice(focus.length),
+    };
+  }, [upcoming]);
+
   const isEmpty = todos.length === 0 && events.length === 0 && subjects.length === 0;
 
   if (!hydrated) return <PageSkeleton />;
 
   return (
     <div>
-      {/* hero */}
-      <header className="mb-10">
+      {/* hero — compact, so today's work stays at the top */}
+      <header className="mb-6">
         <p className="font-mono text-xs tracking-[0.18em] text-ink-soft uppercase">
           {format(new Date(), "EEEE, d MMMM yyyy")}
         </p>
-        <h1 className="mt-2 font-display text-5xl leading-[1.05] font-semibold tracking-tight">
+        <h1 className="mt-2 font-display text-3xl leading-[1.05] font-semibold tracking-tight sm:text-4xl">
           {greeting()}.
           <span className="text-accent italic">
             {stats.dueToday > 0
@@ -151,40 +167,80 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* stats */}
-      <div className="mb-10 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-        {(
-          [
-            { label: "open tasks", value: String(stats.open), href: "/todos" },
-            { label: "due today", value: String(stats.dueToday), href: "/todos" },
-            { label: "due this week", value: String(stats.week), href: "/calendar" },
-            {
-              label: "homework open",
-              value: String(stats.homeworkOpen),
-              href: "/homework",
-            },
-            {
-              label: "overall grade",
-              value: stats.overall === null ? "—" : formatPoints(stats.overall),
-              href: "/grades",
-            },
-          ] as const
-        ).map(({ label, value, href }) => (
+      {/* today — first-class section: tick off what is due right here */}
+      <section className="mb-8">
+        <div className="mb-3 flex items-baseline justify-between">
+          <h2 className="font-display text-xl font-semibold tracking-tight">
+            Today
+            {hasOverdue && (
+              <span className="ml-2 font-mono text-[10px] font-semibold tracking-[0.12em] text-marker uppercase">
+                overdue
+              </span>
+            )}
+          </h2>
           <Link
-            key={label}
-            href={href}
-            className="card group px-5 py-4 transition-colors hover:border-ink/25"
+            href="/todos"
+            className="font-mono text-[11px] tracking-wide text-ink-soft uppercase hover:text-ink"
           >
-            <span className="font-mono text-[10px] tracking-[0.14em] text-ink-soft uppercase">
-              {label}
-            </span>
-            <span className="mt-1 flex items-baseline justify-between">
-              <span className="font-display text-3xl font-semibold tracking-tight">{value}</span>
-              <ArrowRight className="size-4 text-ink-soft opacity-0 transition-opacity group-hover:opacity-100" />
-            </span>
+            all tasks →
           </Link>
-        ))}
-      </div>
+        </div>
+        {todayFocus.length === 0 ? (
+          <p className="text-sm italic text-ink-soft">
+            Nothing due today — the desk is calm.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {todayFocus.map((item) => {
+              const isHw = item.kind === "homework";
+              const title = isHw ? item.homework.title : item.todo.title;
+              const due = isHw ? item.homework.due : item.todo.due;
+              const subject = findSubject(
+                subjects,
+                isHw ? item.homework.subjectId : item.todo.subjectId,
+              );
+              return (
+                <li
+                  key={`${item.kind}-${item.sort}`}
+                  className="group flex items-start gap-3 rounded-xl border border-line bg-card px-4 py-3"
+                >
+                  <button
+                    aria-label="mark as done"
+                    className={cn(
+                      "mt-0.5 grid size-5 shrink-0 cursor-pointer place-items-center rounded-full border transition-colors",
+                      item.overdue ? "border-marker/60 hover:bg-marker/10" : "border-ink/30 hover:border-accent hover:bg-accent/10",
+                    )}
+                    onClick={() =>
+                      isHw
+                        ? toggleHomework(item.homework.id)
+                        : toggleTodo(item.todo.id)
+                    }
+                  >
+                    <Check className="size-3 opacity-0 transition-opacity group-hover:opacity-60" />
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <p className="flex items-center gap-1.5 truncate text-sm font-medium">
+                      {isHw && <BookOpen className="size-3.5 shrink-0 text-accent" />}
+                      <span className={cn("truncate", item.overdue && "text-marker")}>
+                        {title}
+                      </span>
+                    </p>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                      {subject && (
+                        <span className="chip">
+                          <SubjectDot color={subject.color} />
+                          {subject.name}
+                        </span>
+                      )}
+                      <DueChip due={due} />
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
 
       <div className="grid gap-8 lg:grid-cols-[1.2fr_1fr]">
         {/* upcoming tasks */}
@@ -198,11 +254,11 @@ export default function DashboardPage() {
               all tasks →
             </Link>
           </div>
-          {upcoming.length === 0 ? (
+          {restUpcoming.length === 0 && todayFocus.length === 0 ? (
             <EmptyState title="All clear" hint="No open tasks or homework. Enjoy the calm." />
           ) : (
             <ul className="space-y-2">
-              {upcoming.map((item) => {
+              {restUpcoming.map((item) => {
                 if (item.kind === "homework") {
                   const hw = item.homework;
                   const subject = findSubject(subjects, hw.subjectId);
@@ -368,6 +424,30 @@ export default function DashboardPage() {
             </div>
           )}
         </section>
+      </div>
+
+      {/* numbers — quiet, at the end */}
+      <div className="card mt-10 grid grid-cols-3 divide-x divide-line">
+        {(
+          [
+            ["tasks", String(stats.open), "/todos"],
+            ["homework", String(stats.homeworkOpen), "/homework"],
+            ["grade", stats.overall === null ? "—" : formatPoints(stats.overall), "/grades"],
+          ] as const
+        ).map(([label, value, href]) => (
+          <Link
+            key={label}
+            href={href}
+            className="group px-4 py-3 text-center transition-colors hover:bg-ink/5"
+          >
+            <span className="block font-display text-lg font-semibold tracking-tight">
+              {value}
+            </span>
+            <span className="font-mono text-[9px] tracking-[0.14em] text-ink-soft uppercase">
+              {label}
+            </span>
+          </Link>
+        ))}
       </div>
 
       {/* danger zone */}
