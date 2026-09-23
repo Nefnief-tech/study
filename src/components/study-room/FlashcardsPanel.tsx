@@ -84,7 +84,9 @@ export default function FlashcardsPanel({ configured }: { configured: boolean })
             ? "Add an API key to .env.local first (see the setup note)."
             : code === "auth_required"
               ? "Sign in first — use “Sign in to sync” in the sidebar."
-              : detail
+              : code === "ai_locked"
+                ? "AI access is member-only right now — ask the admin to add you to the AI team."
+                : detail
                 ? `The AI provider rejected the request: ${detail}`
                 : "The AI didn't return usable flashcards — try again or pick different documents.",
         );

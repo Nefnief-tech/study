@@ -63,7 +63,9 @@ export default function ChatPanel({ configured }: { configured: boolean }) {
             ? "AI is not configured — add an API key to `.env.local` and restart the server."
             : json?.error === "auth_required"
               ? "Sign in first — use “Sign in to sync” in the sidebar."
-              : detail
+              : json?.error === "ai_locked"
+                ? "AI access is member-only right now — ask the admin to add you to the AI team."
+                : detail
                 ? `The AI provider rejected the request: ${detail}`
                 : "Sorry, the AI provider returned an error. Please try again.",
         );

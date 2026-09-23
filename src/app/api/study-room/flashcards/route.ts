@@ -1,5 +1,5 @@
 import { getDocuments } from "@/lib/server/storage";
-import { verifyUser } from "@/lib/server/auth";
+import { userInAiTeam, verifyUser } from "@/lib/server/auth";
 import { chatCompletions, extractJson, resolveAIConfig } from "@/lib/server/ai";
 import type { Flashcard } from "@/lib/types";
 
@@ -13,6 +13,11 @@ export async function POST(req: Request) {
   // signed-in users only — this route spends AI credits
   const user = await verifyUser(req);
   if (!user) return Response.json({ error: "auth_required" }, { status: 401 });
+
+  // AI is gated to the `ai` Appwrite team — members only
+  if (!(await userInAiTeam(req))) {
+    return Response.json({ error: "ai_locked" }, { status: 403 });
+  }
   const body = (await req.json().catch(() => null)) as { documentIds?: string[] } | null;
   const ids = Array.isArray(body?.documentIds) ? body!.documentIds : [];
   if (ids.length === 0) {

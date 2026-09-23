@@ -1,4 +1,4 @@
-import { Account, Client, Databases, Storage } from "appwrite";
+import { Account, Client, Databases, Storage, Teams } from "appwrite";
 
 /**
  * Appwrite powers auth + cloud sync.
@@ -120,4 +120,20 @@ export async function getAppwriteJwtHeaders(forceRefresh = false): Promise<Recor
     authorization: `Bearer ${jwt}`,
     "content-type": "application/json",
   };
+}
+
+/**
+ * AI gating ("paywall" without payments): members of the `ai` Appwrite team
+ * may use the AI features. A signed-in user can list the teams they belong
+ * to; returns null when signed out or when the check fails.
+ */
+export async function currentUserInAiTeam(): Promise<boolean | null> {
+  if (!client || !account) return null;
+  try {
+    const teams = new Teams(client);
+    const list = await teams.list();
+    return list.teams.some((t) => t.$id === "ai");
+  } catch {
+    return null;
+  }
 }

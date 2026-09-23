@@ -4,7 +4,9 @@ import { useEffect, useState } from "react";
 import { FileText, Layers, MessageCircle, Sparkles } from "lucide-react";
 import { useHydrated } from "@/lib/hooks";
 import { useStudyRoomStore } from "@/lib/store/studyroom";
-import { getAuthHeaders } from "@/lib/auth/appwrite";
+import { currentUserInAiTeam, getAuthHeaders } from "@/lib/auth/appwrite";
+import { useAuthStore } from "@/lib/store/auth";
+import Modal from "@/components/ui/Modal";
 import { cn } from "@/lib/utils";
 import PageSkeleton from "@/components/ui/PageSkeleton";
 import DocumentsPanel from "@/components/study-room/DocumentsPanel";
@@ -23,6 +25,21 @@ export default function StudyRoomPage() {
   const decks = useStudyRoomStore((s) => s.decks);
 
   const [tab, setTab] = useState<Tab>("documents");
+  const authStatus = useAuthStore((s) => s.status);
+  const [aiLockedOpen, setAiLockedOpen] = useState(false);
+
+  // AI is gated to the `ai` Appwrite team — tell locked users upfront instead
+  // of letting them run into errors when they try to chat or generate
+  useEffect(() => {
+    if (authStatus !== "signed-in") return;
+    let cancelled = false;
+    void currentUserInAiTeam().then((member) => {
+      if (!cancelled && member === false) setAiLockedOpen(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [authStatus]);
 
   useEffect(() => {
     void (async () => {
@@ -100,6 +117,32 @@ export default function StudyRoomPage() {
       {tab === "documents" && <DocumentsPanel />}
       {tab === "flashcards" && <FlashcardsPanel configured={configured} />}
       {tab === "chat" && <ChatPanel configured={configured} />}
+
+      <Modal open={aiLockedOpen} onClose={() => setAiLockedOpen(false)} title="AI access">
+        <div className="space-y-3">
+          <div className="flex items-start gap-3">
+            <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent">
+              <Sparkles className="size-4" />
+            </div>
+            <div>
+              <h3 className="font-display text-lg font-semibold tracking-tight">
+                AI is member-only right now
+              </h3>
+              <p className="mt-1 text-sm leading-relaxed text-ink-soft">
+                Chat and flashcard generation are limited to members of the AI team while
+                things are in closed testing. Your documents still upload and stay synced —
+                ask the admin to add your account and the features unlock instantly.
+              </p>
+            </div>
+          </div>
+          <button
+            className="btn-ghost w-full cursor-pointer"
+            onClick={() => setAiLockedOpen(false)}
+          >
+            Got it
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 }

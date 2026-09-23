@@ -1,5 +1,5 @@
 import { getDocuments } from "@/lib/server/storage";
-import { verifyUser } from "@/lib/server/auth";
+import { userInAiTeam, verifyUser } from "@/lib/server/auth";
 import { chatCompletions, resolveAIConfig, streamContent, type LLMMessage } from "@/lib/server/ai";
 import type { ChatMessage } from "@/lib/types";
 
@@ -14,6 +14,11 @@ export async function POST(req: Request) {
   // signed-in users only — this route spends AI credits
   const user = await verifyUser(req);
   if (!user) return Response.json({ error: "auth_required" }, { status: 401 });
+
+  // AI is gated to the `ai` Appwrite team — members only
+  if (!(await userInAiTeam(req))) {
+    return Response.json({ error: "ai_locked" }, { status: 403 });
+  }
 
   const body = (await req.json().catch(() => null)) as
     | { messages?: ChatMessage[]; documentIds?: string[] }
