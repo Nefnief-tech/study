@@ -1,5 +1,7 @@
 package com.semesterapp.semester.widgets
 
+import com.semesterapp.semester.R
+
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
@@ -20,6 +22,7 @@ abstract class SemesterWidgetProvider : AppWidgetProvider() {
         val soft: Int,
         val accent: Int,
         val marker: Int,
+        val divider: Int,
     )
 
     override fun onUpdate(context: Context, manager: AppWidgetManager, appWidgetIds: IntArray) {
@@ -27,6 +30,7 @@ abstract class SemesterWidgetProvider : AppWidgetProvider() {
         val dark = prefs.getBoolean("dark", true)
         for (id in appWidgetIds) {
             manager.updateAppWidget(id, render(context, prefs, dark))
+            manager.notifyAppWidgetViewDataChanged(id, R.id.rows)
         }
     }
 
@@ -40,6 +44,7 @@ abstract class SemesterWidgetProvider : AppWidgetProvider() {
                 soft = 0xFFA29A88.toInt(),
                 accent = 0xFF8FB99A.toInt(),
                 marker = 0xFFE08A63.toInt(),
+                divider = 0xFF3A3427.toInt(),
             )
         } else {
             Colors(
@@ -48,6 +53,7 @@ abstract class SemesterWidgetProvider : AppWidgetProvider() {
                 soft = 0xFF756E60.toInt(),
                 accent = 0xFF31633F.toInt(),
                 marker = 0xFFC14B26.toInt(),
+                divider = 0xFFE8E3D5.toInt(),
             )
         }
 
@@ -63,4 +69,12 @@ abstract class SemesterWidgetProvider : AppWidgetProvider() {
 
     protected fun payload(prefs: SharedPreferences, key: String): JSONObject =
         JSONObject(prefs.getString(key, "{}") ?: "{}")
+
+    protected fun widgetDataService(context: Context, kind: String): Intent =
+        // the data URI distinguishes the two widgets' intents — extras are
+        // ignored by intent filtering, so both widgets would otherwise share
+        // one factory and render the same list
+        Intent(context, WidgetDataService::class.java)
+            .setData(Uri.parse("semester://widget/$kind"))
+            .putExtra("kind", kind)
 }

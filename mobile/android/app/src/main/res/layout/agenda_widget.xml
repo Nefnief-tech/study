@@ -17,10 +17,11 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:textSize="14sp"
+            android:textSize="13sp"
             android:textStyle="bold"
-            android:text="Up next"
-            android:textColor="#ECE6D6" />
+            android:letterSpacing="0.12"
+            android:text="UP NEXT"
+            android:textColor="#8FB99A" />
 
         <TextView
             android:id="@+id/widget_meta"
@@ -30,10 +31,29 @@
             android:textColor="#A29A88" />
     </LinearLayout>
 
-    <LinearLayout
+    <TextView
+        android:id="@+id/header_divider"
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginTop="6dp"
+        android:background="#3A3427" />
+
+    <ListView
         android:id="@+id/rows"
         android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_marginTop="2dp"
+        android:divider="@null"
+        android:dividerHeight="0dp"
+        android:scrollbars="none" />
+
+    <TextView
+        android:id="@+id/empty"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:orientation="vertical" />
+        android:layout_marginTop="8dp"
+        android:textSize="13sp"
+        android:text="Nothing coming up"
+        android:textColor="#A29A88"
+        android:visibility="gone" />
 </LinearLayout>

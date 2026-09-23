@@ -107,7 +107,7 @@ class SemesterWidgets {
       await HomeWidget.saveWidgetData<String>(
         'agenda',
         jsonEncode({
-          'items': agenda.take(6).map(_agendaItem).toList(),
+          'items': agenda.take(12).map(_agendaItem).toList(),
           'total': agenda.length,
         }),
       );
@@ -116,7 +116,7 @@ class SemesterWidgets {
         jsonEncode({
           'day': todayKey,
           'items': [
-            for (final e in lessons.take(8))
+            for (final e in lessons)
               {
                 'period': '${e.period}',
                 'time': (e.time ?? '').split('-').first.trim(),
